@@ -241,12 +241,13 @@ dist\win7\MicrosoftEdgeWebView2RuntimeInstallerX64_109.0.1518.78.exe
 3. 把 `soundguard-client-win7.exe` 放到有写入权限的目录（例如 `D:\SoundGuard\`），双击启动并按引导页配置服务器、设备编号、设备令牌和本机密码。配置写入同目录的 `client-config.json`，不要放到 `Program Files`。
 4. 首次启动后确认麦克风、系统播放检测和证据录音正常，再进行正式部署。
 
-兼容版构建：
+兼容版构建（编译后会自动把 `combase.dll` 的旧导入重定向到 Windows 7 自带的 `ole32.dll`）：
 
 ```powershell
 rustup toolchain install 1.77.2-x86_64-pc-windows-msvc
+python -m pip install pefile
 cd client-win7
-cargo +1.77.2 build --release --manifest-path src-tauri\Cargo.toml
+.\build.ps1
 ```
 
 兼容版不包含 WebView2 109 之外的系统组件，也不改变服务端或数据库格式。Windows 7 已停止安全更新，建议仅在隔离局域网使用；公网部署请使用 Windows 10/11 客户端。

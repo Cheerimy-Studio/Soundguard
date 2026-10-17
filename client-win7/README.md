@@ -21,7 +21,13 @@
 ```powershell
 rustup toolchain install 1.77.2-x86_64-pc-windows-msvc
 cd client-win7
-cargo +1.77.2 build --release --manifest-path src-tauri\Cargo.toml
+.\build.ps1
+```
+
+`build.ps1` 会在编译后调用 `scripts/patch-imports.py`，把旧版 `windows` crate 链接的 `combase.dll!CoTaskMemAlloc/CoTaskMemFree` 导入改到 Windows 7 自带的 `ole32.dll`。缺少这一步时，Windows 7 会报“丢失 combase.dll”。脚本需要 Python 3 和 `pefile`：
+
+```powershell
+python -m pip install pefile
 ```
 
 产物：
