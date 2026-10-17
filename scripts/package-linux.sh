@@ -26,6 +26,7 @@ cp deploy/linux/soundguard.service deploy/linux/install.sh deploy/linux/uninstal
 chmod +x "$STAGING/deploy/install.sh" "$STAGING/deploy/uninstall.sh"
 
 mkdir -p dist
-rm -f dist/soundguard-linux-x86_64.tar.gz
-tar -czf dist/soundguard-linux-x86_64.tar.gz -C "$STAGING" .
+rm -f dist/soundguard-linux-x86_64.tar.gz.new
+tar -czf dist/soundguard-linux-x86_64.tar.gz.new -C "$STAGING" .
+mv -f dist/soundguard-linux-x86_64.tar.gz.new dist/soundguard-linux-x86_64.tar.gz
 echo "packaged dist/soundguard-linux-x86_64.tar.gz"
