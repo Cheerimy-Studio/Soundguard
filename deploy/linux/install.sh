@@ -19,6 +19,8 @@ id soundguard >/dev/null 2>&1 || useradd --system --home-dir "$DEST" --shell /us
 install -d -m 0755 -o soundguard -g soundguard "$DEST"
 install -d -m 0700 -o soundguard -g soundguard "$DEST/data"
 install -m 0755 -o soundguard -g soundguard "$ROOT_DIR/soundguard-server" "$DEST/soundguard-server"
+install -d -m 0755 -o soundguard -g soundguard "$DEST/deploy"
+install -m 0755 -o soundguard -g soundguard "$ROOT_DIR/deploy/uninstall.sh" "$DEST/deploy/uninstall.sh"
 rm -rf "$DEST/web"
 cp -R "$ROOT_DIR/web" "$DEST/web"
 chown -R soundguard:soundguard "$DEST/web"
