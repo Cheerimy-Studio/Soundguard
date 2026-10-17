@@ -1249,7 +1249,7 @@ code {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
+  gap: 24px;
   padding: 18px 34px 14px;
 }
 
@@ -1267,7 +1267,7 @@ code {
 .topbar-right {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
 .live-clock {
@@ -1326,7 +1326,7 @@ code {
   display: flex;
   align-items: center;
   gap: 9px;
-  margin: 0 34px 12px;
+  margin: 10px 34px 12px;
   padding: 9px 13px;
   border-radius: 10px;
   font-size: 10px;
@@ -1345,9 +1345,22 @@ code {
   border: 1px solid rgba(251, 113, 133, 0.15);
 }
 
-.system-banner span,
-.offline-banner span {
+.system-banner > span,
+.offline-banner > span {
   flex: 1;
+}
+
+.offline-banner-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 7px;
+}
+
+.offline-banner-copy .meta-separator {
+  opacity: 0.55;
 }
 
 .system-banner code {
@@ -4429,7 +4442,7 @@ input[type="range"]:disabled {
 
   .system-banner,
   .offline-banner {
-    margin: 0 14px 10px;
+    margin: 8px 14px 10px;
     font-size: 9px;
   }
 

@@ -838,12 +838,15 @@ export default function App() {
         {!overview.device.online && (
           <div className="offline-banner">
             <WifiOff size={16} />
-            <span>
-              {status.detail}
-              {overview.device.lastSeen
-                ? ` · 最后心跳 ${formatRelative(overview.device.lastSeen)}`
-                : ""}
-            </span>
+            <div className="offline-banner-copy">
+              <span>{status.detail}</span>
+              {overview.device.lastSeen && (
+                <>
+                  <span className="meta-separator" aria-hidden="true">·</span>
+                  <span>最后心跳 {formatRelative(overview.device.lastSeen)}</span>
+                </>
+              )}
+            </div>
             <button type="button" onClick={() => setPage("devices")}>
               设备详情
             </button>
