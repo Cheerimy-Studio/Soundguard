@@ -1329,6 +1329,7 @@
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error("当前环境不支持麦克风，请使用安卓 App");
       }
+      setAndroidCommunicationMode(true);
       let stream;
       try {
         stream = await navigator.mediaDevices.getUserMedia({
@@ -1344,7 +1345,6 @@
         if (error && error.name === "NotAllowedError") throw error;
         stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
       }
-      setAndroidCommunicationMode(true);
       if (!call.active) {
         stream.getTracks().forEach((track) => track.stop());
         return;
