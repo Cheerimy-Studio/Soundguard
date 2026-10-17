@@ -1255,6 +1255,28 @@
     return `mobile-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
 
+  let pendingCallMode = null;
+
+  function setAndroidCommunicationMode(active) {
+    if (!window.Android || typeof window.Android.setCommunicationMode !== "function") return;
+    try {
+      window.Android.setCommunicationMode(active);
+    } catch (error) {
+      console.warn("audio mode", error);
+    }
+  }
+
+  window.__resumePendingCall = () => {
+    const mode = pendingCallMode;
+    pendingCallMode = null;
+    if (mode) void startCall(mode);
+  };
+
+  window.__pendingCallPermissionDenied = () => {
+    pendingCallMode = null;
+    toast("未获得麦克风权限，请在系统设置中允许");
+  };
+
   async function startCall(mode = "intercom") {
     if (call.active) return;
     if (!state.device) return;
@@ -1266,6 +1288,18 @@
       toast("实时通道未连接，请稍后重试");
       return;
     }
+    if (window.Android && typeof window.Android.hasMicrophonePermission === "function"
+        && !window.Android.hasMicrophonePermission()) {
+      pendingCallMode = mode;
+      try {
+        window.Android.requestMicrophonePermission();
+      } catch (error) {
+        pendingCallMode = null;
+      }
+      toast("请允许麦克风权限，授权后将自动开始");
+      return;
+    }
+    pendingCallMode = null;
     closePlayer();
     resetCallFields();
     call.active = true;
@@ -1295,15 +1329,22 @@
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error("当前环境不支持麦克风，请使用安卓 App");
       }
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          channelCount: 1,
-        },
-        video: false,
-      });
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            channelCount: 1,
+          },
+          video: false,
+        });
+      } catch (error) {
+        if (error && error.name === "NotAllowedError") throw error;
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      }
+      setAndroidCommunicationMode(true);
       if (!call.active) {
         stream.getTracks().forEach((track) => track.stop());
         return;
@@ -1332,7 +1373,12 @@
         const audio = $("remoteAudio");
         audio.srcObject = remote;
         audio.muted = call.mode === "broadcast";
-        audio.play().catch(() => {});
+        $("unlockCallAudio").classList.add("hidden");
+        audio.play().then(() => {
+          $("unlockCallAudio").classList.add("hidden");
+        }).catch(() => {
+          $("unlockCallAudio").classList.remove("hidden");
+        });
         if (call.connected && !call.recorder) void startRecording();
       };
       pc.onconnectionstatechange = () => {
@@ -1346,6 +1392,10 @@
             $("muteBtn").disabled = false;
             window.clearTimeout(call.timeout);
             startCallTimer();
+            const audio = $("remoteAudio");
+            if (call.mode !== "broadcast" && audio.paused) {
+              audio.play().catch(() => $("unlockCallAudio").classList.remove("hidden"));
+            }
             void startRecording();
           }
         } else if (pc.connectionState === "failed") {
@@ -1522,8 +1572,10 @@
     window.clearTimeout(call.requestTimeout);
     window.clearInterval(call.timer);
     $("callOverlay").classList.add("hidden");
+    $("unlockCallAudio").classList.add("hidden");
     $("remoteAudio").srcObject = null;
     $("remoteAudio").muted = false;
+    setAndroidCommunicationMode(false);
 
     let blob = null;
     if (snapshot.recorder && snapshot.recorder.state !== "inactive") {
@@ -1708,6 +1760,12 @@
     $("callBtn").addEventListener("click", () => void startCall("intercom"));
     $("broadcastBtn").addEventListener("click", () => void startCall("broadcast"));
     $("hangupBtn").addEventListener("click", () => void endCall(true));
+    $("unlockCallAudio").addEventListener("click", () => {
+      const audio = $("remoteAudio");
+      audio.play().then(() => $("unlockCallAudio").classList.add("hidden")).catch(() => {
+        toast("仍无法播放声音，请检查系统媒体音量");
+      });
+    });
     $("muteBtn").addEventListener("click", toggleMute);
     $("refreshRecords").addEventListener("click", loadRecords);
     $("tabCalls").addEventListener("click", () => setRecordTab("calls"));

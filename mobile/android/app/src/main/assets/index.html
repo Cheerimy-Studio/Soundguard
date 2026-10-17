@@ -52,7 +52,6 @@
       </div>
 
       <p id="loginError" class="form-error" role="alert"></p>
-      <p class="login-hint">首次使用请先检测服务器连接，登录状态会保存在本机。</p>
     </div>
   </div>
 
@@ -181,7 +180,8 @@
         <button id="muteBtn" class="btn ghost">静音</button>
         <button id="hangupBtn" class="btn danger">结束通话</button>
       </div>
-      <audio id="remoteAudio" autoplay playsinline></audio>
+      <audio id="remoteAudio" autoplay playsinline webkit-playsinline></audio>
+      <button id="unlockCallAudio" class="btn ghost hidden" type="button">启用声音</button>
     </div>
   </div>
 

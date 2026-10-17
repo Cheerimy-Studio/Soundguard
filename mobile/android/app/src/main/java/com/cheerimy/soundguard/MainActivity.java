@@ -9,6 +9,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -185,6 +186,20 @@ public class MainActivity extends Activity {
         super.onDestroy();
     }
 
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != 1003 || webView == null) {
+            return;
+        }
+        boolean granted = grantResults.length > 0
+                && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+        String script = granted
+                ? "window.__resumePendingCall && window.__resumePendingCall()"
+                : "window.__pendingCallPermissionDenied && window.__pendingCallPermissionDenied()";
+        webView.post(() -> webView.evaluateJavascript(script, null));
+    }
+
     private String normalizeServer(String serverUrl) {
         if (serverUrl == null) {
             return "";
@@ -292,6 +307,33 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> requestPermissions(
                         new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1002));
             }
+        }
+
+        @JavascriptInterface
+        public boolean hasMicrophonePermission() {
+            return checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                    == PackageManager.PERMISSION_GRANTED;
+        }
+
+        @JavascriptInterface
+        public void requestMicrophonePermission() {
+            runOnUiThread(() -> requestPermissions(
+                    new String[]{Manifest.permission.RECORD_AUDIO}, 1003));
+        }
+
+        @JavascriptInterface
+        public void setCommunicationMode(boolean active) {
+            runOnUiThread(() -> {
+                AudioManager audio = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                if (audio == null) return;
+                if (active) {
+                    audio.setMode(AudioManager.MODE_IN_COMMUNICATION);
+                    audio.setSpeakerphoneOn(true);
+                } else {
+                    audio.setSpeakerphoneOn(false);
+                    audio.setMode(AudioManager.MODE_NORMAL);
+                }
+            });
         }
 
         @JavascriptInterface
