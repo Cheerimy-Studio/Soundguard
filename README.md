@@ -22,7 +22,7 @@
 - 通话期间自动暂停分贝检测与上报，结束后自动恢复。
 - 禁用 WebView2 右键菜单，避免误触浏览器菜单。
 - 每 30 秒计算一次 **Leq 能量平均**、峰值、最低值与采样帧数；测量前应用 80 Hz 高通与自适应噪声门降噪。
-- 可校准的 dB SPL 偏移（默认 90 dB），超限时自动上传完整 **30 秒**单声道 16 kHz WAV，覆盖整个平均窗口。
+- 可校准的 dB SPL 偏移（默认 90 dB），超限时自动上传完整 **30 秒**单声道 48 kHz WAV，覆盖整个平均窗口。
 - 实时滚动声压折线图，包含平均线与阈值线；客户端每秒把当前读数推送到服务端，后台与安卓端同步刷新。
 - 通话记录卡片：显示管理端发起的对讲/广播记录，并可在客户端回放。
 - 每 10 秒心跳；每 30 秒上报；断网时报告进入本地待发队列，恢复后重发。
@@ -32,6 +32,8 @@
 - 管理员远程暂停/恢复采集：客户端保持心跳在线，但停止麦克风采集与上报。
 - 支持多设备：每台设备独立令牌、独立状态、独立告警与通话记录。
 - WebRTC 双向对讲、单向广播；支持自动接听或现场手动接听，频道状态与计时可见。关闭自动接听需要密码验证。
+- 对讲启用回声消除与半双工防啸叫保护：远端说话时自动压低本端麦克风，避免同场部署时形成声反馈。
+- 管理端与安卓端通话录音使用 48 kHz 混音与 192 kbps Opus 编码，保存清晰的双方语音。
 - 通知板块显示后台发布的标题与内容；通话记录仅展示最近 5 条，支持回放。
 - 界面采用 Tauri 原生 WebView2，浅色轻量 UI，支持高 DPI。
 
@@ -230,16 +232,19 @@ Windows 7 不能运行当前的 Rust 1.94 / Tauri 2.12 客户端（会缺少 `bc
 发布目录：
 
 ```text
+dist\soundguard-win7-setup-0.1.0.exe
 dist\win7\soundguard-client-win7.exe
 dist\win7\MicrosoftEdgeWebView2RuntimeInstallerX64_109.0.1518.78.exe
 ```
 
-部署步骤：
+推荐直接运行 `soundguard-win7-setup-0.1.0.exe`：安装包已内置 WebView2 109 固定运行时，按当前用户安装到 `%LOCALAPPDATA%\声垣`，开始菜单和桌面会自动创建快捷方式，卸载可在“程序和功能”中完成。
+
+便携版步骤：
 
 1. 系统必须是 **Windows 7 SP1 64 位**，并已安装 SHA-2 代码签名更新（KB4474419、KB4490628）。
 2. 先运行 `MicrosoftEdgeWebView2RuntimeInstallerX64_109.0.1518.78.exe`。109.0.1518.78 是最后支持 Windows 7 的 WebView2 版本，安装后可被兼容版客户端直接使用。
 3. 把 `soundguard-client-win7.exe` 放到有写入权限的目录（例如 `D:\SoundGuard\`），双击启动并按引导页配置服务器、设备编号、设备令牌和本机密码。配置写入同目录的 `client-config.json`，不要放到 `Program Files`。
-4. 首次启动后确认麦克风、系统播放检测和证据录音正常，再进行正式部署。
+4. 首次启动后确认麦克风、系统播放检测、对讲防啸叫和证据录音正常，再进行正式部署。
 
 兼容版构建（编译后会自动把 `combase.dll` 的旧导入重定向到 Windows 7 自带的 `ole32.dll`）：
 
@@ -248,6 +253,12 @@ rustup toolchain install 1.77.2-x86_64-pc-windows-msvc
 python -m pip install pefile
 cd client-win7
 .\build.ps1
+```
+
+如需重新生成带 WebView2 109 固定运行时的安装包，把固定运行时解压到 `src-tauri\webview2-runtime\Microsoft.WebView2.FixedVersionRuntime.109.0.1518.78.x64\`，然后运行：
+
+```powershell
+..\client\node_modules\.bin\tauri.cmd bundle --bundles nsis
 ```
 
 兼容版不包含 WebView2 109 之外的系统组件，也不改变服务端或数据库格式。Windows 7 已停止安全更新，建议仅在隔离局域网使用；公网部署请使用 Windows 10/11 客户端。
@@ -339,7 +350,7 @@ docker compose up -d --build
 | `DAILY_REPORT_TIME` | `08:00` | 本地时间日报发送时刻 |
 | `OFFLINE_TIMEOUT_SECS` | `45` | 离线判定秒数（客户端 10 秒心跳） |
 | `ALERT_COOLDOWN_SECS` | `300` | 持续超限时邮件冷却 |
-| `EVIDENCE_SECONDS` | `30` | 证据录音固定覆盖完整 30 秒平均窗口 |
+| `EVIDENCE_SECONDS` | `30` | 固定值；证据录音始终覆盖完整 30 秒平均窗口，该项不会被覆盖 |
 | `AUTO_RECORD_EVIDENCE` | `true` | 超限自动录音 |
 | `RETENTION_DAYS` | `30` | 遥测文件保留天数 |
 | `SMTP_HOST/PORT/USER/PASS/FROM` | 空 | SMTP 配置 |
@@ -350,6 +361,8 @@ docker compose up -d --build
 | `SMTP_TLS` | `starttls` | `starttls`（587）、`wrapper`（465）或 `none`（仅本地中继） |
 
 阈值、收件人、日报时间、离线判定、冷却、证据与保留天数也可在管理端设置页修改，修改后立即同步客户端。
+
+`.env` 中显式填写的 `THRESHOLD_DB`、`ALERT_TO`、`REPORT_TO`、日报、离线判定、冷却、自动录音和保留天数，会在每次启动时覆盖 `data/state.json` 中保存的全局设置，并写入日志；删除对应环境变量后，管理端保存的值重新生效。设备级单独设置仍优先于全局设置。
 
 ---
 
@@ -397,7 +410,7 @@ SMTP_TLS=starttls
 data/
 ├─ state.json                 多设备、设置、告警、通话记录、日报状态
 ├─ readings/YYYY-MM-DD.jsonl  每 30 秒一条遥测（含设备编号）
-├─ evidence/*.wav             超限证据（16 kHz，单声道）
+├─ evidence/*.wav             超限证据（48 kHz，单声道）
 ├─ calls/*.webm               管理端或安卓端发起的通话录音（AES-256-GCM 加密）
 ├─ media-key                  音频加密密钥（务必备份）
 └─ outbox/*.txt               SMTP dry-run 预览

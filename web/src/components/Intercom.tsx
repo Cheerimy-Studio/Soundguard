@@ -113,7 +113,7 @@ export function IntercomCard({ controller, device, signalingConnected }: Interco
             </div>
           </div>
           <p className="intercom-desc">
-            通过管理端直接与现场双向通话，或向设备单向广播。音频使用端到端 WebRTC 传输。
+            通过管理端直接与现场双向通话，或向设备单向广播。音频使用端到端 WebRTC 传输，并启用回声消除与防啸叫。
           </p>
           <div className="intercom-actions">
             <button

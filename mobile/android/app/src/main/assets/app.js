@@ -1255,6 +1255,88 @@
     return `mobile-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
 
+  function createCallAudioGuard(localStream) {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return null;
+    try {
+      const context = new AudioContextClass();
+      const tracks = localStream.getAudioTracks();
+      let active = true;
+      let sensor = null;
+      let animation = 0;
+      let ducked = false;
+      let userMuted = false;
+      let lastLoud = 0;
+      const apply = () => {
+        tracks.forEach((track) => {
+          track.enabled = !(userMuted || ducked);
+        });
+      };
+      const guard = {
+        attachRemote(remoteStream) {
+          if (sensor || !active) return;
+          try {
+            const analyser = context.createAnalyser();
+            analyser.fftSize = 512;
+            analyser.smoothingTimeConstant = 0.55;
+            sensor = context.createMediaStreamSource(remoteStream);
+            const silentSink = context.createGain();
+            silentSink.gain.value = 0;
+            sensor.connect(analyser);
+            analyser.connect(silentSink);
+            silentSink.connect(context.destination);
+            const samples = new Float32Array(analyser.fftSize);
+            const tick = () => {
+              if (!active) return;
+              analyser.getFloatTimeDomainData(samples);
+              let sum = 0;
+              for (let index = 0; index < samples.length; index += 1) {
+                sum += samples[index] * samples[index];
+              }
+              const rms = Math.sqrt(sum / samples.length);
+              const now = performance.now();
+              if (rms > 0.015) lastLoud = now;
+              const shouldDuck = now - lastLoud < 280;
+              if (shouldDuck !== ducked) {
+                ducked = shouldDuck;
+                apply();
+              }
+              animation = requestAnimationFrame(tick);
+            };
+            animation = requestAnimationFrame(tick);
+          } catch (error) {
+            console.warn("anti-feedback guard unavailable", error);
+          }
+        },
+        setUserMuted(muted) {
+          userMuted = muted;
+          apply();
+        },
+        resume() {
+          void context.resume().catch(() => undefined);
+        },
+        close() {
+          active = false;
+          if (animation) cancelAnimationFrame(animation);
+          try {
+            if (sensor) sensor.disconnect();
+          } catch (error) {
+            // Ignore.
+          }
+          ducked = false;
+          userMuted = false;
+          apply();
+          void context.close().catch(() => undefined);
+        },
+      };
+      void context.resume().catch(() => undefined);
+      return guard;
+    } catch (error) {
+      console.warn("anti-feedback guard unavailable", error);
+      return null;
+    }
+  }
+
   let pendingCallMode = null;
 
   function setAndroidCommunicationMode(active) {
@@ -1351,11 +1433,13 @@
       }
       window.clearTimeout(call.requestTimeout);
       call.requestTimeout = null;
+      call.micStream = stream;
+      call.guard = createCallAudioGuard(stream);
       call.local = stream;
       const iceServers = state.overview?.iceServers || [];
       const pc = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 4 });
       call.pc = pc;
-      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+      call.local.getTracks().forEach((track) => pc.addTrack(track, call.local));
       pc.onicecandidate = (event) => {
         if (!event.candidate || !call.active) return;
         sendSocket({
@@ -1370,12 +1454,14 @@
       pc.ontrack = (event) => {
         const remote = event.streams[0] || new MediaStream([event.track]);
         call.remote = remote;
+        call.guard?.attachRemote(remote);
         const audio = $("remoteAudio");
         audio.srcObject = remote;
         audio.muted = call.mode === "broadcast";
         $("unlockCallAudio").classList.add("hidden");
         audio.play().then(() => {
           $("unlockCallAudio").classList.add("hidden");
+          call.guard?.resume();
         }).catch(() => {
           $("unlockCallAudio").classList.remove("hidden");
         });
@@ -1504,7 +1590,7 @@
     try {
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       if (!AudioContextClass) return;
-      const context = new AudioContextClass();
+      const context = new AudioContextClass({ sampleRate: 48000 });
       if (context.state === "suspended") await context.resume();
       const destination = context.createMediaStreamDestination();
       const localSource = context.createMediaStreamSource(call.local);
@@ -1518,7 +1604,10 @@
       const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
         ? "audio/webm;codecs=opus"
         : "audio/webm";
-      const recorder = new MediaRecorder(destination.stream, { mimeType: mime });
+      const recorder = new MediaRecorder(destination.stream, {
+        mimeType: mime,
+        audioBitsPerSecond: 192000,
+      });
       call.chunks = [];
       recorder.ondataavailable = (event) => {
         if (event.data && event.data.size > 0) call.chunks.push(event.data);
@@ -1536,9 +1625,13 @@
   function toggleMute() {
     if (!call.local) return;
     call.muted = !call.muted;
-    call.local.getAudioTracks().forEach((track) => {
-      track.enabled = !call.muted;
-    });
+    if (call.guard) {
+      call.guard.setUserMuted(call.muted);
+    } else {
+      call.local.getAudioTracks().forEach((track) => {
+        track.enabled = !call.muted;
+      });
+    }
     $("muteBtn").textContent = call.muted ? "取消静音" : "静音";
   }
 
@@ -1551,6 +1644,8 @@
       mode: call.mode,
       pc: call.pc,
       local: call.local,
+      micStream: call.micStream,
+      guard: call.guard,
       recorder: call.recorder,
       chunks: call.chunks,
       audioContext: call.audioContext,
@@ -1602,6 +1697,8 @@
     } catch (error) {
       // Ignore.
     }
+    if (snapshot.guard) snapshot.guard.close();
+    if (snapshot.micStream) snapshot.micStream.getTracks().forEach((track) => track.stop());
     if (snapshot.local) snapshot.local.getTracks().forEach((track) => track.stop());
     snapshot.sources.forEach((source) => {
       try {
@@ -1662,6 +1759,8 @@
     call.mode = null;
     call.pc = null;
     call.local = null;
+    call.micStream = null;
+    call.guard = null;
     call.remote = null;
     call.pendingIce = [];
     call.remoteDescription = false;
@@ -1762,7 +1861,10 @@
     $("hangupBtn").addEventListener("click", () => void endCall(true));
     $("unlockCallAudio").addEventListener("click", () => {
       const audio = $("remoteAudio");
-      audio.play().then(() => $("unlockCallAudio").classList.add("hidden")).catch(() => {
+      audio.play().then(() => {
+        $("unlockCallAudio").classList.add("hidden");
+        call.guard?.resume();
+      }).catch(() => {
         toast("仍无法播放声音，请检查系统媒体音量");
       });
     });

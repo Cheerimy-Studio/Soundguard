@@ -1,5 +1,5 @@
-$ErrorActionPreference = "Stop"
-$root = Split-Path -Parent $PSScriptRoot
+﻿$ErrorActionPreference = "Stop"
+$root = $PSScriptRoot
 Push-Location $root
 try {
     cargo +1.77.2 build --release --manifest-path src-tauri\Cargo.toml

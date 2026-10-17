@@ -4,6 +4,7 @@ server/target/
 client/src-tauri/target/
 client-win7/target/
 client-win7/src-tauri/gen/
+client-win7/src-tauri/webview2-runtime/
 client/src-tauri/gen/
 web/dist/
 

@@ -883,6 +883,88 @@
     });
   }
 
+  function createCallAudioGuard(localStream) {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return null;
+    try {
+      const context = new AudioContextClass();
+      const tracks = localStream.getAudioTracks();
+      let active = true;
+      let sensor = null;
+      let animation = 0;
+      let ducked = false;
+      let userMuted = false;
+      let lastLoud = 0;
+      const apply = () => {
+        tracks.forEach((track) => {
+          track.enabled = !(userMuted || ducked);
+        });
+      };
+      const guard = {
+        attachRemote(remoteStream) {
+          if (sensor || !active) return;
+          try {
+            const analyser = context.createAnalyser();
+            analyser.fftSize = 512;
+            analyser.smoothingTimeConstant = 0.55;
+            sensor = context.createMediaStreamSource(remoteStream);
+            const silentSink = context.createGain();
+            silentSink.gain.value = 0;
+            sensor.connect(analyser);
+            analyser.connect(silentSink);
+            silentSink.connect(context.destination);
+            const samples = new Float32Array(analyser.fftSize);
+            const tick = () => {
+              if (!active) return;
+              analyser.getFloatTimeDomainData(samples);
+              let sum = 0;
+              for (let index = 0; index < samples.length; index += 1) {
+                sum += samples[index] * samples[index];
+              }
+              const rms = Math.sqrt(sum / samples.length);
+              const now = performance.now();
+              if (rms > 0.015) lastLoud = now;
+              const shouldDuck = now - lastLoud < 280;
+              if (shouldDuck !== ducked) {
+                ducked = shouldDuck;
+                apply();
+              }
+              animation = requestAnimationFrame(tick);
+            };
+            animation = requestAnimationFrame(tick);
+          } catch (error) {
+            console.warn("anti-feedback guard unavailable", error);
+          }
+        },
+        setUserMuted(muted) {
+          userMuted = muted;
+          apply();
+        },
+        resume() {
+          void context.resume().catch(() => undefined);
+        },
+        close() {
+          active = false;
+          if (animation) cancelAnimationFrame(animation);
+          try {
+            if (sensor) sensor.disconnect();
+          } catch (error) {
+            // Ignore.
+          }
+          ducked = false;
+          userMuted = false;
+          apply();
+          void context.close().catch(() => undefined);
+        },
+      };
+      void context.resume().catch(() => undefined);
+      return guard;
+    } catch (error) {
+      console.warn("anti-feedback guard unavailable", error);
+      return null;
+    }
+  }
+
   async function acceptOffer(offer) {
     if (state.call) {
       sendReject(offer.callId, "busy");
@@ -895,6 +977,8 @@
       mode,
       pc: null,
       stream: null,
+      micStream: null,
+      guard: null,
       muted: false,
     };
     state.call = call;
@@ -914,7 +998,7 @@
     els.intercomDesc.textContent =
       mode === "broadcast"
         ? "正在播放管理端广播音频。"
-        : "麦克风已开启，建议使用耳机避免回声。";
+        : "已启用回声消除与防啸叫；同场使用时请适当降低扬声器音量。";
 
     try {
       if (mode === "intercom") {
@@ -933,6 +1017,8 @@
           },
           video: false,
         });
+        call.micStream = call.stream;
+        call.guard = createCallAudioGuard(call.micStream);
       }
 
       const pc = new RTCPeerConnection({
@@ -955,6 +1041,7 @@
       };
       pc.ontrack = (event) => {
         const stream = event.streams[0] || new MediaStream([event.track]);
+        call.guard?.attachRemote(stream);
         els.remoteAudio.srcObject = stream;
         const playPromise = els.remoteAudio.play();
         if (playPromise && typeof playPromise.catch === "function") {
@@ -1013,6 +1100,13 @@
         // Ignore.
       }
     }
+    if (call.guard) {
+      call.guard.close();
+      call.guard = null;
+    }
+    if (call.micStream) {
+      call.micStream.getTracks().forEach((track) => track.stop());
+    }
     if (call.stream) {
       call.stream.getTracks().forEach((track) => track.stop());
     }
@@ -1034,9 +1128,13 @@
     const call = state.call;
     if (!call || !call.stream) return;
     call.muted = !call.muted;
-    call.stream.getAudioTracks().forEach((track) => {
-      track.enabled = !call.muted;
-    });
+    if (call.guard) {
+      call.guard.setUserMuted(call.muted);
+    } else {
+      call.stream.getAudioTracks().forEach((track) => {
+        track.enabled = !call.muted;
+      });
+    }
     els.muteCall.classList.toggle("is-muted", call.muted);
     els.muteCall.querySelector("span").textContent = call.muted ? "取消静音" : "静音";
   }
@@ -1408,6 +1506,7 @@
         play
           .then(() => {
             els.unlockAudio.hidden = true;
+            state.call?.guard?.resume();
           })
           .catch(() => toast("无法播放声音，请检查输出设备", "error"));
       }

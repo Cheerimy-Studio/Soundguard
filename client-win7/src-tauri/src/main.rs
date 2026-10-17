@@ -883,6 +883,23 @@ fn main() {
             request_exit
         ])
         .setup(|app| {
+            // The installer ships the WebView2 109 fixed runtime next to the
+            // executable. The portable build does not, so drop Tauri's fixed
+            // runtime env var and let WebView2 use the system installation.
+            #[cfg(windows)]
+            {
+                const FIXED_RUNTIME: &str =
+                    "webview2-runtime/Microsoft.WebView2.FixedVersionRuntime.109.0.1518.78.x64";
+                if let Ok(resource_dir) = app.path().resource_dir() {
+                    if !resource_dir
+                        .join(FIXED_RUNTIME)
+                        .join("msedgewebview2.exe")
+                        .is_file()
+                    {
+                        std::env::remove_var("WEBVIEW2_BROWSER_EXECUTABLE_FOLDER");
+                    }
+                }
+            }
             let legacy_config_dir = app
                 .path()
                 .app_config_dir()

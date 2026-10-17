@@ -68,6 +68,22 @@ impl Store {
             warn!("Persisted settings are invalid ({error}); restoring defaults");
             settings = config.default_settings.clone();
         }
+        if !config.env_overrides.is_empty() {
+            let persisted = settings.clone();
+            config.env_overrides.apply_to(&mut settings);
+            if let Err(error) = settings.validate_and_normalize() {
+                warn!(
+                    "Environment overrides are invalid ({error}); keeping saved settings: {}",
+                    config.env_overrides.labels().join(", ")
+                );
+                settings = persisted;
+            } else {
+                warn!(
+                    "Environment overrides applied over saved settings: {}",
+                    config.env_overrides.labels().join(", ")
+                );
+            }
+        }
 
         let mut devices = stored
             .as_mut()

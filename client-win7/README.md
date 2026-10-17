@@ -36,6 +36,29 @@ python -m pip install pefile
 client-win7\target\release\soundguard-client.exe
 ```
 
+## 生成含 WebView2 109 的安装包
+
+安装版会把 WebView2 109 固定运行时一起打包，目标机器无需联网，也无需预装 WebView2。先下载微软 109.0.1518.78 x64 固定运行时 cab，解压到：
+
+```text
+src-tauri\webview2-runtime\Microsoft.WebView2.FixedVersionRuntime.109.0.1518.78.x64\
+```
+
+该目录必须直接包含 `msedgewebview2.exe`。然后运行：
+
+```powershell
+# 在 client-win7 目录
+..\client\node_modules\.bin\tauri.cmd bundle --bundles nsis
+```
+
+安装包输出到：
+
+```text
+target\release\bundle\nsis\声垣_0.1.0_x64-setup.exe
+```
+
+安装模式为当前用户，程序安装到 `%LOCALAPPDATA%\声垣`，该目录可写，`client-config.json` 会保存在程序旁边。
+
 ## 运行要求
 
 1. Windows 7 SP1 64 位，安装 SHA-2 更新 KB4474419、KB4490628。

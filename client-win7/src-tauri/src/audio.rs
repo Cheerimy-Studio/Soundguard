@@ -18,7 +18,7 @@ use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
 
 pub const WINDOW_SECONDS: f64 = 30.0;
 const EVIDENCE_RING_SECONDS: usize = 32;
-const TARGET_EVIDENCE_RATE: u32 = 16_000;
+const TARGET_EVIDENCE_RATE: u32 = 48_000;
 const TARGET_CAPTURE_RATE: u32 = 44_100;
 const TARGET_CAPTURE_CHANNELS: usize = 2;
 const SYSTEM_PLAYBACK_THRESHOLD: f32 = 0.0045;
@@ -795,6 +795,6 @@ mod tests {
         assert_eq!(&wav[0..4], b"RIFF");
         let data_size = u32::from_le_bytes([wav[40], wav[41], wav[42], wav[43]]) as usize;
         let samples = data_size / 2;
-        assert_eq!(samples, 16_000 * 30);
+        assert_eq!(samples, 48_000 * 30);
     }
 }

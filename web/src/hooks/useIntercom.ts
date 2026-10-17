@@ -59,6 +59,113 @@ function signalId(): string {
   return `call-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+interface CallAudioGuard {
+  attachRemote: (stream: MediaStream) => void;
+  setUserMuted: (muted: boolean) => void;
+  resume: () => void;
+  close: () => void;
+}
+
+/**
+ * Half-duplex anti-feedback guard. While the remote side is speaking, the
+ * outgoing microphone track is disabled. This breaks the acoustic loop that
+ * occurs when both endpoints are in the same room. The microphone reopens
+ * shortly after the remote is quiet. Using the track itself avoids a second
+ * audio graph, so auto-answer and background calls keep working.
+ */
+function createCallAudioGuard(localStream: MediaStream): CallAudioGuard | null {
+  const AudioContextClass =
+    window.AudioContext ||
+    (window as unknown as { webkitAudioContext?: typeof AudioContext })
+      .webkitAudioContext;
+  if (!AudioContextClass) return null;
+  try {
+    const context = new AudioContextClass();
+    const tracks = localStream.getAudioTracks();
+    let active = true;
+    let sensor: MediaStreamAudioSourceNode | null = null;
+    let animation = 0;
+    let ducked = false;
+    let userMuted = false;
+    let lastLoud = 0;
+
+    const apply = () => {
+      tracks.forEach((track) => {
+        track.enabled = !(userMuted || ducked);
+      });
+    };
+
+    const attachRemote = (remoteStream: MediaStream) => {
+      if (sensor || !active) return;
+      void context.resume().catch(() => undefined);
+      try {
+        const analyser = context.createAnalyser();
+        analyser.fftSize = 512;
+        analyser.smoothingTimeConstant = 0.55;
+        sensor = context.createMediaStreamSource(remoteStream);
+        const silentSink = context.createGain();
+        silentSink.gain.value = 0;
+        sensor.connect(analyser);
+        analyser.connect(silentSink);
+        silentSink.connect(context.destination);
+        const samples = new Float32Array(analyser.fftSize);
+        const tick = () => {
+          if (!active) return;
+          analyser.getFloatTimeDomainData(samples);
+          let sum = 0;
+          for (let index = 0; index < samples.length; index += 1) {
+            sum += samples[index] * samples[index];
+          }
+          const rms = Math.sqrt(sum / samples.length);
+          const now = performance.now();
+          if (rms > 0.015) lastLoud = now;
+          const shouldDuck = now - lastLoud < 280;
+          if (shouldDuck !== ducked) {
+            ducked = shouldDuck;
+            apply();
+          }
+          animation = requestAnimationFrame(tick);
+        };
+        animation = requestAnimationFrame(tick);
+      } catch {
+        // The remote track may not be attachable yet; keep the plain stream.
+      }
+    };
+
+    const close = () => {
+      active = false;
+      if (animation) cancelAnimationFrame(animation);
+      try {
+        sensor?.disconnect();
+      } catch {
+        // Ignore.
+      }
+      ducked = false;
+      userMuted = false;
+      apply();
+      try {
+        void context.close();
+      } catch {
+        // Ignore.
+      }
+    };
+
+    const setUserMuted = (muted: boolean) => {
+      userMuted = muted;
+      apply();
+    };
+
+    const resume = () => {
+      void context.resume().catch(() => undefined);
+    };
+
+    void context.resume().catch(() => undefined);
+    return { attachRemote, setUserMuted, resume, close };
+  } catch {
+    return null;
+  }
+}
+
 export function useIntercom({
   iceServers,
   sendSignal,
@@ -77,6 +184,7 @@ export function useIntercom({
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
+  const audioGuardRef = useRef<CallAudioGuard | null>(null);
   const callIdRef = useRef<string | null>(null);
   const deviceIdRef = useRef<string | null>(deviceId);
   const recordingRef = useRef<RecordingSession | null>(null);
@@ -186,7 +294,7 @@ export function useIntercom({
           (window as unknown as { webkitAudioContext?: typeof AudioContext })
             .webkitAudioContext;
         if (AudioContextClass && typeof MediaRecorder !== "undefined") {
-          const context = new AudioContextClass();
+          const context = new AudioContextClass({ sampleRate: 48_000 });
           const destination = context.createMediaStreamDestination();
           const source = context.createMediaStreamSource(stream);
           source.connect(destination);
@@ -198,9 +306,10 @@ export function useIntercom({
           const mimeType = preferredTypes.find((type) =>
             MediaRecorder.isTypeSupported(type),
           );
-          const recorder = mimeType
-            ? new MediaRecorder(destination.stream, { mimeType })
-            : new MediaRecorder(destination.stream);
+          const recorder = new MediaRecorder(destination.stream, {
+            ...(mimeType ? { mimeType } : {}),
+            audioBitsPerSecond: 192_000,
+          });
           recorder.ondataavailable = (event) => {
             if (event.data.size > 0) session.chunks.push(event.data);
           };
@@ -255,6 +364,8 @@ export function useIntercom({
         pcRef.current.close();
         pcRef.current = null;
       }
+      audioGuardRef.current?.close();
+      audioGuardRef.current = null;
       localStreamRef.current?.getTracks().forEach((track) => track.stop());
       localStreamRef.current = null;
       remoteStreamRef.current = null;
@@ -406,6 +517,8 @@ export function useIntercom({
         }
         localStreamRef.current = stream;
         setLocalStream(stream);
+        const activeStream = stream;
+        audioGuardRef.current = createCallAudioGuard(activeStream);
 
         const pc = new RTCPeerConnection({
           iceServers,
@@ -413,7 +526,7 @@ export function useIntercom({
         });
         pcRef.current = pc;
 
-        stream.getTracks().forEach((track) => pc.addTrack(track, stream!));
+        activeStream.getTracks().forEach((track) => pc.addTrack(track, activeStream));
         pc.onicecandidate = (event) => {
           if (!event.candidate || callIdRef.current !== callId) return;
           sendSignal({
@@ -428,6 +541,7 @@ export function useIntercom({
         pc.ontrack = (event) => {
           const streamFromPeer = event.streams[0] ?? new MediaStream([event.track]);
           remoteStreamRef.current = streamFromPeer;
+          audioGuardRef.current?.attachRemote(streamFromPeer);
           attachRemoteToRecording(streamFromPeer);
           if (mountedRef.current) setRemoteStream(streamFromPeer);
         };
@@ -438,7 +552,7 @@ export function useIntercom({
             if (phaseRef.current !== "active") {
               updatePhase("active");
               if (!startedAtRef.current) startedAtRef.current = Date.now();
-              startRecording(callId, nextMode, stream!);
+              startRecording(callId, nextMode, activeStream);
               timerRef.current = window.setInterval(() => {
                 if (startedAtRef.current) {
                   setElapsed(Math.floor((Date.now() - startedAtRef.current) / 1000));
@@ -512,9 +626,13 @@ export function useIntercom({
     const stream = localStreamRef.current;
     if (!stream) return;
     const nextMuted = !muted;
-    stream.getAudioTracks().forEach((track) => {
-      track.enabled = !nextMuted;
-    });
+    if (audioGuardRef.current) {
+      audioGuardRef.current.setUserMuted(nextMuted);
+    } else {
+      stream.getAudioTracks().forEach((track) => {
+        track.enabled = !nextMuted;
+      });
+    }
     setMuted(nextMuted);
   }, [muted]);
 

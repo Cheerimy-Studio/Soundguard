@@ -6,6 +6,7 @@ use std::{
 };
 
 use serde_json::{json, Value};
+use tracing::warn;
 
 use crate::models::Settings;
 
@@ -25,6 +26,98 @@ pub struct SmtpConfig {
     pub from: String,
     pub from_name: String,
     pub tls: SmtpTls,
+}
+
+/// Values explicitly configured in `.env` take precedence over the global
+/// settings persisted in `data/state.json`. When an env var is absent, the
+/// value saved by the administrator is kept.
+#[derive(Clone, Debug, Default)]
+pub struct SettingsOverrides {
+    pub threshold_db: Option<f64>,
+    pub alert_recipients: Option<Vec<String>>,
+    pub report_recipients: Option<Vec<String>>,
+    pub daily_report_enabled: Option<bool>,
+    pub daily_report_time: Option<String>,
+    pub offline_timeout_secs: Option<u64>,
+    pub alert_cooldown_secs: Option<u64>,
+    pub auto_record_evidence: Option<bool>,
+    pub retention_days: Option<u32>,
+}
+
+impl SettingsOverrides {
+    pub fn is_empty(&self) -> bool {
+        self.threshold_db.is_none()
+            && self.alert_recipients.is_none()
+            && self.report_recipients.is_none()
+            && self.daily_report_enabled.is_none()
+            && self.daily_report_time.is_none()
+            && self.offline_timeout_secs.is_none()
+            && self.alert_cooldown_secs.is_none()
+            && self.auto_record_evidence.is_none()
+            && self.retention_days.is_none()
+    }
+
+    pub fn apply_to(&self, settings: &mut Settings) {
+        if let Some(value) = self.threshold_db {
+            settings.threshold_db = value;
+        }
+        if let Some(value) = &self.alert_recipients {
+            settings.alert_recipients = value.clone();
+        }
+        if let Some(value) = &self.report_recipients {
+            settings.report_recipients = value.clone();
+        }
+        if let Some(value) = self.daily_report_enabled {
+            settings.daily_report_enabled = value;
+        }
+        if let Some(value) = &self.daily_report_time {
+            settings.daily_report_time = value.clone();
+        }
+        if let Some(value) = self.offline_timeout_secs {
+            settings.offline_timeout_secs = value;
+        }
+        if let Some(value) = self.alert_cooldown_secs {
+            settings.alert_cooldown_secs = value;
+        }
+        if let Some(value) = self.auto_record_evidence {
+            settings.auto_record_evidence = value;
+        }
+        if let Some(value) = self.retention_days {
+            settings.retention_days = value;
+        }
+    }
+
+    pub fn labels(&self) -> Vec<&'static str> {
+        let mut labels = Vec::new();
+        if self.threshold_db.is_some() {
+            labels.push("THRESHOLD_DB");
+        }
+        if self.alert_recipients.is_some() {
+            labels.push("ALERT_TO");
+        }
+        if self.report_recipients.is_some() {
+            labels.push("REPORT_TO");
+        }
+        if self.daily_report_enabled.is_some() {
+            labels.push("DAILY_REPORT_ENABLED");
+        }
+        if self.daily_report_time.is_some() {
+            labels.push("DAILY_REPORT_TIME");
+        }
+        if self.offline_timeout_secs.is_some() {
+            labels.push("OFFLINE_TIMEOUT_SECS");
+        }
+        if self.alert_cooldown_secs.is_some() {
+            labels.push("ALERT_COOLDOWN_SECS");
+        }
+        if self.auto_record_evidence.is_some() {
+            labels.push("AUTO_RECORD_EVIDENCE");
+        }
+        if self.retention_days.is_some() {
+            labels.push("RETENTION_DAYS");
+        }
+        labels
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -49,6 +142,7 @@ pub struct Config {
     pub tls_cert: Option<PathBuf>,
     pub tls_key: Option<PathBuf>,
     pub default_settings: Settings,
+    pub env_overrides: SettingsOverrides,
 }
 
 fn var(key: &str) -> Option<String> {
@@ -78,6 +172,37 @@ fn parse_bool(key: &str, fallback: bool) -> bool {
     var(key)
         .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
         .unwrap_or(fallback)
+}
+
+fn opt_u64(key: &str) -> Option<u64> {
+    var(key).and_then(|value| match value.parse::<u64>() {
+        Ok(parsed) => Some(parsed),
+        Err(_) => {
+            warn!("忽略无效的环境变量 {key}={value}，需要无符号整数");
+            None
+        }
+    })
+}
+
+fn opt_f64(key: &str) -> Option<f64> {
+    var(key).and_then(|value| match value.parse::<f64>() {
+        Ok(parsed) if parsed.is_finite() => Some(parsed),
+        _ => {
+            warn!("忽略无效的环境变量 {key}={value}，需要数字");
+            None
+        }
+    })
+}
+
+fn opt_bool(key: &str) -> Option<bool> {
+    var(key).and_then(|value| match value.to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => {
+            warn!("忽略无效的环境变量 {key}={value}，需要 true/false");
+            None
+        }
+    })
 }
 
 pub fn parse_recipients(raw: &str) -> Vec<String> {
@@ -220,7 +345,22 @@ impl Config {
 
         let alert_recipients = inboxes("ALERT_TO", None);
         let report_recipients = inboxes("REPORT_TO", Some("ALERT_TO"));
+        let alert_override = var("ALERT_TO").map(|value| parse_recipients(&value));
+        let report_override = var("REPORT_TO")
+            .map(|value| parse_recipients(&value))
+            .or_else(|| alert_override.clone());
         let admin_email = var("ADMIN_EMAIL").or_else(|| alert_recipients.first().cloned());
+        let env_overrides = SettingsOverrides {
+            threshold_db: opt_f64("THRESHOLD_DB"),
+            alert_recipients: alert_override,
+            report_recipients: report_override,
+            daily_report_enabled: opt_bool("DAILY_REPORT_ENABLED"),
+            daily_report_time: var("DAILY_REPORT_TIME"),
+            offline_timeout_secs: opt_u64("OFFLINE_TIMEOUT_SECS"),
+            alert_cooldown_secs: opt_u64("ALERT_COOLDOWN_SECS"),
+            auto_record_evidence: opt_bool("AUTO_RECORD_EVIDENCE"),
+            retention_days: opt_u64("RETENTION_DAYS").map(|value| value.min(u32::MAX as u64) as u32),
+        };
         let default_settings = Settings {
             threshold_db: parse_f64("THRESHOLD_DB", 65.0),
             alert_recipients,
@@ -253,6 +393,7 @@ impl Config {
             stop_pin,
             public_base_url: var_or("PUBLIC_BASE_URL", &format!("http://127.0.0.1:{port}")),
             default_settings,
+            env_overrides,
             smtp,
             ice_servers,
             cors_origins,
@@ -298,4 +439,53 @@ fn ensure_dir(path: &Path) -> anyhow::Result<()> {
         std::fs::create_dir_all(path)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_settings() -> Settings {
+        Settings {
+            threshold_db: 65.0,
+            alert_recipients: vec!["saved@example.com".to_string()],
+            report_recipients: vec!["report@example.com".to_string()],
+            daily_report_enabled: true,
+            daily_report_time: "08:00".to_string(),
+            offline_timeout_secs: 45,
+            alert_cooldown_secs: 300,
+            evidence_seconds: 30,
+            auto_record_evidence: true,
+            retention_days: 30,
+            notification_enabled: false,
+            notification_title: String::new(),
+            notification_content: String::new(),
+        }
+    }
+
+    #[test]
+    fn env_overrides_replace_only_configured_fields() {
+        let mut settings = sample_settings();
+        let overrides = SettingsOverrides {
+            threshold_db: Some(58.5),
+            alert_recipients: Some(vec!["env@example.com".to_string()]),
+            ..Default::default()
+        };
+        overrides.apply_to(&mut settings);
+        assert_eq!(settings.threshold_db, 58.5);
+        assert_eq!(settings.alert_recipients, vec!["env@example.com"]);
+        assert_eq!(settings.report_recipients, vec!["report@example.com"]);
+        assert_eq!(settings.offline_timeout_secs, 45);
+        assert_eq!(overrides.labels(), vec!["THRESHOLD_DB", "ALERT_TO"]);
+    }
+
+    #[test]
+    fn empty_overrides_leave_saved_settings_untouched() {
+        let mut settings = sample_settings();
+        let original = settings.clone();
+        SettingsOverrides::default().apply_to(&mut settings);
+        assert_eq!(settings.threshold_db, original.threshold_db);
+        assert_eq!(settings.alert_recipients, original.alert_recipients);
+        assert!(SettingsOverrides::default().is_empty());
+    }
 }
