@@ -8,9 +8,11 @@ mod media_cipher;
 mod models;
 mod monitor;
 mod notify;
+mod private_file;
 mod reports;
 mod state;
 mod store;
+mod wav;
 
 use std::sync::Arc;
 
@@ -18,18 +20,15 @@ use tokio::net::TcpListener;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-use crate::{
-    config::Config, hub::Hub, mailer::Mailer, state::AppState, store::Store,
-};
+use crate::{config::Config, hub::Hub, mailer::Mailer, state::AppState, store::Store};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                "soundguard_server=info,tower_http=warn,axum=warn".into()
-            }),
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "soundguard_server=info,tower_http=warn,axum=warn".into()),
         )
         .init();
 
@@ -44,6 +43,8 @@ async fn main() -> anyhow::Result<()> {
         store,
         mailer,
         hub,
+        dummy_password_hash: Arc::new(auth::hash_password(&auth::generate_password(24))?),
+        password_jobs: Arc::new(tokio::sync::Semaphore::new(4)),
         login_guard: Arc::new(std::sync::Mutex::new(crate::state::LoginGuard::default())),
     };
 
@@ -89,8 +90,23 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn shutdown_signal() {
-    if let Err(error) = tokio::signal::ctrl_c().await {
-        warn!("Could not listen for shutdown signal: {error}");
-    }
+    let interrupt = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                warn!("Could not listen for SIGTERM: {error}");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! { _ = interrupt => {}, _ = terminate => {} }
     info!("Shutdown signal received");
 }

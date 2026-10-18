@@ -1,6 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio;
+#[path = "../../../client/common/config_file.rs"]
+mod config_file;
+#[path = "../../../client/common/security.rs"]
+mod security;
 
 use std::{
     collections::VecDeque,
@@ -19,9 +23,7 @@ use base64::Engine as _;
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{
-    webview::WebviewWindowBuilder, AppHandle, Emitter, Manager, State, WebviewUrl,
-};
+use tauri::{webview::WebviewWindowBuilder, AppHandle, Emitter, Manager, State, WebviewUrl};
 
 const HEARTBEAT_SECS: u64 = 10;
 const MAX_PENDING_REPORTS: usize = 12;
@@ -34,7 +36,7 @@ struct ClientConfig {
     device_id: String,
     device_token: String,
     calibration_offset_db: f64,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     local_password_hash: String,
 }
 
@@ -63,6 +65,14 @@ impl ClientConfig {
         if !matches!(parsed.scheme(), "http" | "https") {
             return Err("服务器地址必须使用 http 或 https".to_string());
         }
+        if parsed.host_str().is_none()
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+        {
+            return Err("服务器地址不能包含凭据、查询或片段".into());
+        }
         if self.device_id.is_empty() {
             return Err("设备编号不能为空".to_string());
         }
@@ -88,8 +98,8 @@ impl ClientConfig {
 }
 
 fn hash_local_password(password: &str) -> Result<String, String> {
-    if password.chars().count() < 6 {
-        return Err("本地密码至少需要 6 个字符".to_string());
+    if !(8..=128).contains(&password.chars().count()) {
+        return Err("本地密码需要 8–128 个字符".to_string());
     }
     let salt = argon2::password_hash::SaltString::generate(&mut rand_core::OsRng);
     Argon2::default()
@@ -163,6 +173,8 @@ impl Default for RemoteConfig {
 }
 
 struct RuntimeState {
+    local_auth: Mutex<security::PasswordGuard>,
+    network_gate: tokio::sync::Mutex<()>,
     config_path: PathBuf,
     config: RwLock<ClientConfig>,
     status: Mutex<StatusSnapshot>,
@@ -314,8 +326,10 @@ fn persist_client_config(
     if let Some(parent) = state.config_path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| format!("创建配置目录失败: {error}"))?;
     }
-    let bytes = serde_json::to_vec_pretty(&config).map_err(|error| error.to_string())?;
-    std::fs::write(&state.config_path, bytes).map_err(|error| format!("保存配置失败: {error}"))?;
+    let mut stored = serde_json::to_value(&config).map_err(|e| e.to_string())?;
+    stored["localPasswordHash"] = Value::String(config.local_password_hash.clone());
+    let bytes = serde_json::to_vec_pretty(&stored).map_err(|error| error.to_string())?;
+    config_file::atomic_write(&state.config_path, &bytes)?;
 
     let previous = state.config();
     {
@@ -325,9 +339,7 @@ fn persist_client_config(
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *guard = config.clone();
     }
-    state
-        .audio
-        .set_offset(config.calibration_offset_db as f32);
+    state.audio.set_offset(config.calibration_offset_db as f32);
     if previous.server_url != config.server_url || previous.device_id != config.device_id {
         state
             .pending
@@ -335,6 +347,12 @@ fn persist_client_config(
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
     }
+    state.audio.set_suspended(true);
+    state.audio.set_suspended(false);
+    *state
+        .last_audio_sent
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = None;
     state.force_probe.store(true, Ordering::SeqCst);
     {
         let mut status = state
@@ -359,13 +377,17 @@ fn save_config(
     state: State<'_, Arc<RuntimeState>>,
     config: ClientConfig,
 ) -> Result<ClientConfig, String> {
+    state
+        .local_auth
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .require_authorized()?;
     let previous = state.config();
     let mut config = config.normalize()?;
-    if config.local_password_hash.trim().is_empty() {
-        config.local_password_hash = previous.local_password_hash;
-    }
-    if config.local_password_hash.trim().is_empty() {
-        return Err("请先完成首次配置并设置本地密码".to_string());
+    // The webview must never replace the password hash supplied by Rust.
+    config.local_password_hash = previous.local_password_hash;
+    if config.local_password_hash.is_empty() {
+        return Err("请先完成首次配置".into());
     }
     persist_client_config(&app, &state, config)
 }
@@ -378,6 +400,9 @@ fn setup_client(
     password: String,
     confirm_password: String,
 ) -> Result<ClientConfig, String> {
+    if !state.config().needs_setup() {
+        return Err("客户端已配置，请通过密码验证后修改设置".into());
+    }
     if password != confirm_password {
         return Err("两次输入的本地密码不一致".to_string());
     }
@@ -417,19 +442,13 @@ fn open_github() {
 }
 
 #[tauri::command]
-fn set_call_active(
-    state: State<'_, Arc<RuntimeState>>,
-    active: bool,
-) -> Result<(), String> {
+fn set_call_active(state: State<'_, Arc<RuntimeState>>, active: bool) -> Result<(), String> {
     state.audio.set_suspended(active);
     Ok(())
 }
 
 #[tauri::command]
-fn verify_pin(
-    state: State<'_, Arc<RuntimeState>>,
-    pin: String,
-) -> Result<(), String> {
+fn verify_pin(state: State<'_, Arc<RuntimeState>>, pin: String) -> Result<(), String> {
     if pin.trim().is_empty() {
         return Err("请输入本地密码".to_string());
     }
@@ -437,9 +456,11 @@ fn verify_pin(
     if config.local_password_hash.trim().is_empty() {
         return Err("尚未设置本地密码，请重新打开客户端完成首次配置".to_string());
     }
-    if !verify_local_password(&config.local_password_hash, pin.trim()) {
-        return Err("本地密码不正确".to_string());
-    }
+    state
+        .local_auth
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .verify(|| pin.len() <= 512 && verify_local_password(&config.local_password_hash, &pin))?;
     Ok(())
 }
 
@@ -458,9 +479,12 @@ async fn request_exit(
     if pin.trim().is_empty() {
         return Err("请输入本地密码".to_string());
     }
-    if !verify_local_password(&config.local_password_hash, pin.trim()) {
-        return Err("本地密码不正确".to_string());
-    }
+    state
+        .local_auth
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .verify(|| pin.len() <= 512 && verify_local_password(&config.local_password_hash, &pin))?;
+    state.exiting.store(true, Ordering::SeqCst);
     // The server audit is best effort; the local password already authorized exit.
     let _ = post_json::<serde_json::Value, _>(
         &state,
@@ -521,6 +545,10 @@ async fn post_json<T: DeserializeOwned, B: Serialize>(
     path: &str,
     body: &B,
 ) -> Result<T, String> {
+    let _network_guard = state.network_gate.lock().await;
+    if state.exiting.load(Ordering::SeqCst) && path != "/api/device/local-stop" {
+        return Err("客户端正在关闭".into());
+    }
     let response = state
         .http
         .post(config.api_url(path))
@@ -534,7 +562,12 @@ async fn post_json<T: DeserializeOwned, B: Serialize>(
     if !status.is_success() {
         let message = serde_json::from_str::<Value>(&text)
             .ok()
-            .and_then(|value| value.get("error").and_then(Value::as_str).map(str::to_string))
+            .and_then(|value| {
+                value
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
             .unwrap_or_else(|| format!("服务器返回 {}", status.as_u16()));
         return Err(message);
     }
@@ -546,7 +579,13 @@ async fn network_loop(app: AppHandle, state: Arc<RuntimeState>) {
 
     loop {
         tokio::time::sleep(Duration::from_millis(500)).await;
+        if state.exiting.load(Ordering::SeqCst) {
+            break;
+        }
         let config = state.config();
+        if config.needs_setup() {
+            continue;
+        }
 
         if state.force_probe.swap(false, Ordering::SeqCst) || Instant::now() >= next_heartbeat {
             next_heartbeat = Instant::now() + Duration::from_secs(HEARTBEAT_SECS);
@@ -567,6 +606,13 @@ async fn network_loop(app: AppHandle, state: Arc<RuntimeState>) {
             .await
             {
                 Ok(response) => {
+                    let current = state.config();
+                    if current.server_url != config.server_url
+                        || current.device_id != config.device_id
+                        || current.device_token != config.device_token
+                    {
+                        continue;
+                    }
                     apply_audio_state(&state, response.desired_monitoring);
                     {
                         let mut remote = state
@@ -629,7 +675,7 @@ async fn network_loop(app: AppHandle, state: Arc<RuntimeState>) {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .connected;
-        if connected {
+        if connected && !state.exiting.load(Ordering::SeqCst) {
             for _ in 0..2 {
                 let payload = {
                     let guard = state
@@ -650,12 +696,19 @@ async fn network_loop(app: AppHandle, state: Arc<RuntimeState>) {
                 .await
                 {
                     Ok(response) => {
+                        let current = state.config();
+                        if current.server_url != config.server_url
+                            || current.device_id != config.device_id
+                            || current.device_token != config.device_token
+                        {
+                            break;
+                        }
                         {
                             let mut queue = state
                                 .pending
                                 .lock()
                                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-                            queue.pop_front();
+                            queue.retain(|item| item.recorded_at != payload.recorded_at);
                         }
                         apply_audio_state(&state, response.desired_monitoring);
                         {
@@ -712,6 +765,9 @@ async fn live_loop(state: Arc<RuntimeState>) {
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         ticker.tick().await;
+        if state.exiting.load(Ordering::SeqCst) {
+            break;
+        }
         let connected = state
             .status
             .lock()
@@ -733,13 +789,7 @@ async fn live_loop(state: Arc<RuntimeState>) {
             aec_enabled: snapshot.aec_enabled,
             recorded_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
         };
-        let _ = post_json::<Value, _>(
-            &state,
-            &config,
-            "/api/device/live",
-            &payload,
-        )
-        .await;
+        let _ = post_json::<Value, _>(&state, &config, "/api/device/live", &payload).await;
     }
 }
 
@@ -748,6 +798,13 @@ async fn meter_loop(app: AppHandle, state: Arc<RuntimeState>) {
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         ticker.tick().await;
+        if state.exiting.load(Ordering::SeqCst) {
+            break;
+        }
+        if state.config().needs_setup() {
+            state.audio.set_capturing(false);
+            continue;
+        }
         let remote = state.remote();
         let snapshot: MeterSnapshot = state.audio.snapshot();
         let event = MeterEvent {
@@ -810,7 +867,7 @@ async fn meter_loop(app: AppHandle, state: Arc<RuntimeState>) {
             min_db: (min_db * 10.0).round() / 10.0,
             duration_secs: report.duration_secs.round().max(1.0) as u32,
             sample_count: report.frames.min(u32::MAX as u64) as u32,
-            recorded_at: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
+            recorded_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
             audio_base64,
         };
         let pending_len = {
@@ -830,22 +887,24 @@ async fn meter_loop(app: AppHandle, state: Arc<RuntimeState>) {
     }
 }
 
-fn load_or_create_config(path: &PathBuf) -> ClientConfig {
-    if let Ok(raw) = std::fs::read_to_string(path) {
-        if let Ok(config) = serde_json::from_str::<ClientConfig>(&raw) {
-            if let Ok(normalized) = config.normalize() {
-                return normalized;
-            }
+fn load_or_create_config(path: &PathBuf) -> Result<ClientConfig, String> {
+    match std::fs::read_to_string(path) {
+        Ok(raw) => {
+            return serde_json::from_str::<ClientConfig>(&raw)
+                .map_err(|error| format!("配置文件损坏，请恢复备份：{error}"))
         }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("读取配置失败：{error}")),
     }
+
     let config = ClientConfig::default();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     if let Ok(bytes) = serde_json::to_vec_pretty(&config) {
-        let _ = std::fs::write(path, bytes);
+        config_file::atomic_write(path, &bytes)?;
     }
-    config
+    Ok(config)
 }
 
 fn build_status(config: &ClientConfig, remote: &RemoteConfig) -> StatusSnapshot {
@@ -912,24 +971,27 @@ fn main() {
             let legacy_config_dir = app
                 .path()
                 .app_config_dir()
-                .map_err(|error| {
-                    std::io::Error::other(format!("无法定位配置目录: {error}"))
-                })?;
+                .map_err(|error| std::io::Error::other(format!("无法定位配置目录: {error}")))?;
             std::fs::create_dir_all(&legacy_config_dir)?;
             let legacy_config_path = legacy_config_dir.join("client-config.json");
             let config_path = std::env::current_exe()
                 .ok()
-                .and_then(|path| path.parent().map(|parent| parent.join("client-config.json")))
+                .and_then(|path| {
+                    path.parent()
+                        .map(|parent| parent.join("client-config.json"))
+                })
                 .unwrap_or(legacy_config_path.clone());
             if !config_path.exists() && legacy_config_path.exists() {
                 let _ = std::fs::copy(&legacy_config_path, &config_path);
             }
-            let config = load_or_create_config(&config_path);
+            let config = load_or_create_config(&config_path).map_err(std::io::Error::other)?;
             let audio = AudioShared::new(config.calibration_offset_db as f32);
             let audio_tx = audio::spawn_audio_engine(audio.clone());
             let remote = RemoteConfig::default();
             let status = build_status(&config, &remote);
             let runtime = Arc::new(RuntimeState {
+                local_auth: Mutex::new(security::PasswordGuard::default()),
+                network_gate: tokio::sync::Mutex::new(()),
                 config_path,
                 config: RwLock::new(config),
                 status: Mutex::new(status),
@@ -941,26 +1003,25 @@ fn main() {
                 exiting: AtomicBool::new(false),
                 force_probe: AtomicBool::new(true),
                 http: reqwest::Client::builder()
+                    .redirect(reqwest::redirect::Policy::none())
                     .timeout(Duration::from_secs(9))
                     .build()?,
             });
             app.manage(runtime.clone());
 
-            let window = WebviewWindowBuilder::new(
-                app,
-                "main",
-                WebviewUrl::App("index.html".into()),
-            )
-            .title("声垣")
-            .inner_size(1120.0, 760.0)
-            .min_inner_size(900.0, 640.0)
-            .center()
-            .build()?;
+            let window =
+                WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                    .title("声垣")
+                    .inner_size(1120.0, 760.0)
+                    .min_inner_size(900.0, 640.0)
+                    .center()
+                    .build()?;
 
             #[cfg(windows)]
             {
                 let _ = window.with_webview(|webview| {
                     use webview2_com::Microsoft::Web::WebView2::Win32::{
+                        COREWEBVIEW2_PERMISSION_KIND_MICROPHONE,
                         COREWEBVIEW2_PERMISSION_STATE_ALLOW,
                     };
                     use webview2_com::PermissionRequestedEventHandler;
@@ -970,8 +1031,13 @@ fn main() {
                             core.add_PermissionRequested(
                                 &PermissionRequestedEventHandler::create(Box::new(|_, args| {
                                     if let Some(args) = args {
-                                        let _ = args
-                                            .SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW);
+                                        let mut kind = Default::default();
+                                        if args.PermissionKind(&mut kind).is_ok()
+                                            && kind == COREWEBVIEW2_PERMISSION_KIND_MICROPHONE
+                                        {
+                                            let _ =
+                                                args.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW);
+                                        }
                                     }
                                     Ok(())
                                 })),
@@ -997,10 +1063,7 @@ fn main() {
             });
 
             let app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(network_loop(
-                app_handle.clone(),
-                runtime.clone(),
-            ));
+            tauri::async_runtime::spawn(network_loop(app_handle.clone(), runtime.clone()));
             tauri::async_runtime::spawn(meter_loop(app_handle, runtime.clone()));
             tauri::async_runtime::spawn(live_loop(runtime));
             Ok(())

@@ -1,6 +1,5 @@
 use std::{
-    env,
-    fs,
+    env, fs,
     net::SocketAddr,
     path::{Path, PathBuf},
 };
@@ -122,6 +121,7 @@ impl SettingsOverrides {
 
 #[derive(Clone, Debug)]
 pub struct Config {
+    pub _data_lock: std::sync::Arc<fs::File>,
     pub bind: String,
     pub port: u16,
     pub data_dir: PathBuf,
@@ -162,6 +162,15 @@ fn parse_u64(key: &str, fallback: u64) -> u64 {
         .unwrap_or(fallback)
 }
 
+fn parse_port(key: &str, fallback: u16) -> anyhow::Result<u16> {
+    let raw = var(key).unwrap_or_else(|| fallback.to_string());
+    let port: u16 = raw
+        .parse()
+        .map_err(|_| anyhow::anyhow!("{key} must be 1–65535"))?;
+    anyhow::ensure!(port != 0, "{key} must be 1–65535");
+    Ok(port)
+}
+
 fn parse_f64(key: &str, fallback: f64) -> f64 {
     var(key)
         .and_then(|value| value.parse::<f64>().ok())
@@ -170,7 +179,12 @@ fn parse_f64(key: &str, fallback: f64) -> f64 {
 
 fn parse_bool(key: &str, fallback: bool) -> bool {
     var(key)
-        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(fallback)
 }
 
@@ -225,45 +239,24 @@ fn generated_secret() -> String {
     )
 }
 
-fn load_or_create_secret(data_dir: &Path, filename: &str, prefix: &str) -> String {
+fn load_or_create_secret(data_dir: &Path, filename: &str, prefix: &str) -> anyhow::Result<String> {
     let path = data_dir.join(filename);
-    if let Ok(raw) = fs::read_to_string(&path) {
-        let value = raw.trim().to_string();
-        if !value.is_empty() {
-            return value;
-        }
+    match fs::read_to_string(&path) {
+        Ok(raw) if !raw.trim().is_empty() => return Ok(raw.trim().to_string()),
+        Ok(_) => anyhow::bail!(
+            "Secret file {} is empty; restore it from backup",
+            path.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
     let value = format!("{prefix}{}", generated_secret());
-    let _ = fs::create_dir_all(data_dir);
-    if fs::write(&path, format!("{value}\n")).is_ok() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
-        }
-    }
-    value
+    crate::private_file::atomic_write(&path, format!("{value}\n").as_bytes())?;
+    Ok(value)
 }
 
-fn load_or_create_stop_pin(data_dir: &Path) -> String {
-    let path = data_dir.join("initial-stop-pin.txt");
-    if let Ok(raw) = fs::read_to_string(&path) {
-        let value = raw.trim().to_string();
-        if !value.is_empty() {
-            return value;
-        }
-    }
-    let value = format!("{:06}", rand::random::<u32>() % 1_000_000);
-    let _ = fs::create_dir_all(data_dir);
-    if fs::write(&path, format!("{value}
-")).is_ok() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
-        }
-    }
-    value
+fn load_or_create_stop_pin(data_dir: &Path) -> anyhow::Result<String> {
+    load_or_create_secret(data_dir, "initial-stop-pin.txt", "")
 }
 
 fn inboxes(key: &str, fallback_key: Option<&str>) -> Vec<String> {
@@ -275,30 +268,45 @@ fn inboxes(key: &str, fallback_key: Option<&str>) -> Vec<String> {
 
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
-        let port = parse_u64("PORT", 8080) as u16;
+        let port = parse_port("PORT", 8080)?;
         let bind = var_or("BIND_ADDR", "0.0.0.0");
         let data_dir = PathBuf::from(var_or("DATA_DIR", "data"));
+        ensure_dir(&data_dir)?;
+        let mut options = fs::OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let data_lock = options.open(data_dir.join(".soundguard.lock"))?;
+        data_lock.try_lock().map_err(|error| {
+            anyhow::anyhow!("DATA_DIR is already in use or cannot be locked: {error}")
+        })?;
         let web_dist = PathBuf::from(var_or("WEB_DIST", "web/dist"));
         let media_key_file = var("MEDIA_KEY_FILE")
             .map(PathBuf::from)
             .unwrap_or_else(|| data_dir.join("media-key"));
-        let smtp = var("SMTP_HOST").map(|host| SmtpConfig {
-            port: parse_u64("SMTP_PORT", 587) as u16,
-            username: var("SMTP_USER"),
-            password: var("SMTP_PASS"),
-            from: var_or("SMTP_FROM", "soundguard@localhost"),
-            from_name: var_or("SMTP_FROM_NAME", "声垣 SoundGuard"),
-            tls: match var("SMTP_TLS")
-                .unwrap_or_else(|| "starttls".to_string())
-                .to_ascii_lowercase()
-                .as_str()
-            {
-                "none" | "false" | "plain" => SmtpTls::None,
-                "ssl" | "wrapper" | "implicit" => SmtpTls::Wrapper,
-                _ => SmtpTls::StartTls,
-            },
-            host,
-        });
+        let smtp = match var("SMTP_HOST") {
+            Some(host) => Some(SmtpConfig {
+                port: parse_port("SMTP_PORT", 587)?,
+                username: var("SMTP_USER"),
+                password: var("SMTP_PASS"),
+                from: var_or("SMTP_FROM", "soundguard@localhost"),
+                from_name: var_or("SMTP_FROM_NAME", "声垣 SoundGuard"),
+                tls: match var("SMTP_TLS")
+                    .unwrap_or_else(|| "starttls".to_string())
+                    .to_ascii_lowercase()
+                    .as_str()
+                {
+                    "none" | "false" | "plain" => SmtpTls::None,
+                    "ssl" | "wrapper" | "implicit" => SmtpTls::Wrapper,
+                    _ => SmtpTls::StartTls,
+                },
+                host,
+            }),
+            None => None,
+        };
 
         let ice_servers = var("ICE_SERVERS")
             .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
@@ -311,15 +319,15 @@ impl Config {
 
         let jwt_secret = match var("JWT_SECRET") {
             Some(value) if value.len() >= 32 => value,
-            _ => load_or_create_secret(&data_dir, "jwt-secret", ""),
+            _ => load_or_create_secret(&data_dir, "jwt-secret", "")?,
         };
         let device_token = match var("DEVICE_TOKEN") {
             Some(value) if value.len() >= 16 => value,
-            _ => load_or_create_secret(&data_dir, "initial-device-token", "sg_"),
+            _ => load_or_create_secret(&data_dir, "initial-device-token", "sg_")?,
         };
         let stop_pin = match var("STOP_PIN") {
             Some(value) => value,
-            _ => load_or_create_stop_pin(&data_dir),
+            _ => load_or_create_stop_pin(&data_dir)?,
         };
 
         let cors_origins = var("CORS_ORIGINS")
@@ -333,6 +341,19 @@ impl Config {
             })
             .unwrap_or_default();
 
+        for origin in &cors_origins {
+            let uri: axum::http::Uri = origin
+                .parse()
+                .map_err(|_| anyhow::anyhow!("Invalid CORS_ORIGINS entry"))?;
+            anyhow::ensure!(
+                matches!(uri.scheme_str(), Some("http" | "https"))
+                    && uri.authority().is_some()
+                    && uri.path() == "/"
+                    && uri.query().is_none(),
+                "CORS_ORIGINS entries must be HTTP(S) origins"
+            );
+            let _: axum::http::HeaderValue = origin.parse()?;
+        }
         let tls_cert = var("TLS_CERT").map(PathBuf::from);
         let tls_key = var("TLS_KEY").map(PathBuf::from);
         let (tls_cert, tls_key) = match (tls_cert, tls_key) {
@@ -340,7 +361,8 @@ impl Config {
             (Some(_), Some(_)) => {
                 return Err(anyhow::anyhow!("TLS_CERT/TLS_KEY 文件不存在"));
             }
-            _ => (None, None),
+            (None, None) => (None, None),
+            _ => anyhow::bail!("TLS_CERT 和 TLS_KEY 必须同时配置"),
         };
 
         let alert_recipients = inboxes("ALERT_TO", None);
@@ -359,9 +381,10 @@ impl Config {
             offline_timeout_secs: opt_u64("OFFLINE_TIMEOUT_SECS"),
             alert_cooldown_secs: opt_u64("ALERT_COOLDOWN_SECS"),
             auto_record_evidence: opt_bool("AUTO_RECORD_EVIDENCE"),
-            retention_days: opt_u64("RETENTION_DAYS").map(|value| value.min(u32::MAX as u64) as u32),
+            retention_days: opt_u64("RETENTION_DAYS")
+                .map(|value| value.min(u32::MAX as u64) as u32),
         };
-        let default_settings = Settings {
+        let mut default_settings = Settings {
             threshold_db: parse_f64("THRESHOLD_DB", 65.0),
             alert_recipients,
             report_recipients,
@@ -371,13 +394,22 @@ impl Config {
             alert_cooldown_secs: parse_u64("ALERT_COOLDOWN_SECS", 300),
             evidence_seconds: 30,
             auto_record_evidence: parse_bool("AUTO_RECORD_EVIDENCE", true),
-            retention_days: parse_u64("RETENTION_DAYS", 30) as u32,
+            retention_days: u32::try_from(parse_u64("RETENTION_DAYS", 30))?,
             notification_enabled: false,
             notification_title: String::new(),
             notification_content: String::new(),
         };
 
+        default_settings
+            .validate_and_normalize()
+            .map_err(anyhow::Error::msg)?;
+        let jwt_ttl_hours = parse_u64("JWT_TTL_HOURS", 24);
+        anyhow::ensure!(
+            (1..=720).contains(&jwt_ttl_hours),
+            "JWT_TTL_HOURS must be 1–720"
+        );
         Ok(Self {
+            _data_lock: std::sync::Arc::new(data_lock),
             bind,
             port,
             data_dir,
@@ -386,12 +418,12 @@ impl Config {
             admin_password: var_or("ADMIN_PASSWORD", ""),
             admin_email,
             jwt_secret,
-            jwt_ttl_hours: parse_u64("JWT_TTL_HOURS", 24) as i64,
+            jwt_ttl_hours: jwt_ttl_hours as i64,
             device_id: var_or("DEVICE_ID", ""),
             device_name: var_or("DEVICE_NAME", "未命名设备"),
             device_token,
             stop_pin,
-            public_base_url: var_or("PUBLIC_BASE_URL", &format!("http://127.0.0.1:{port}")),
+            public_base_url: var_or("PUBLIC_BASE_URL", format!("http://127.0.0.1:{port}")),
             default_settings,
             env_overrides,
             smtp,
@@ -403,8 +435,9 @@ impl Config {
     }
 
     pub fn socket_addr(&self) -> anyhow::Result<SocketAddr> {
-        format!("{}:{}", self.bind, self.port)
-            .parse()
+        self.bind
+            .parse::<std::net::IpAddr>()
+            .map(|ip| SocketAddr::new(ip, self.port))
             .map_err(Into::into)
     }
 
@@ -436,7 +469,14 @@ impl Config {
 
 fn ensure_dir(path: &Path) -> anyhow::Result<()> {
     if !path.exists() {
-        std::fs::create_dir_all(path)?;
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(path)?;
     }
     Ok(())
 }

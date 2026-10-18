@@ -27,7 +27,11 @@ pub fn readings_csv(readings: &[Reading]) -> anyhow::Result<Vec<u8>> {
             &format!("{:.1}", reading.avg_db),
             &format!("{:.1}", reading.peak_db),
             &format!("{:.1}", reading.min_db),
-            if reading.over_threshold { "true" } else { "false" },
+            if reading.over_threshold {
+                "true"
+            } else {
+                "false"
+            },
             &reading.duration_secs.to_string(),
         ])?;
     }
@@ -43,22 +47,20 @@ pub fn downsample(readings: &[Reading], max_points: usize) -> Vec<Reading> {
         .chunks(bucket_size)
         .map(|chunk| {
             let first = &chunk[0];
-            let count = chunk.len() as f64;
             Reading {
                 device_id: first.device_id.clone(),
                 recorded_at: first.recorded_at,
-                avg_db: round1(chunk.iter().map(|r| r.avg_db).sum::<f64>() / count),
+                avg_db: round1(crate::models::leq(chunk)),
                 peak_db: chunk
                     .iter()
                     .map(|r| r.peak_db)
                     .fold(f64::NEG_INFINITY, f64::max),
-                min_db: chunk
-                    .iter()
-                    .map(|r| r.min_db)
-                    .fold(f64::INFINITY, f64::min),
+                min_db: chunk.iter().map(|r| r.min_db).fold(f64::INFINITY, f64::min),
                 over_threshold: chunk.iter().any(|r| r.over_threshold),
                 duration_secs: chunk.iter().map(|r| r.duration_secs).sum(),
-                sample_count: chunk.iter().map(|r| r.sample_count).sum(),
+                sample_count: chunk
+                    .iter()
+                    .fold(0u32, |sum, r| sum.saturating_add(r.sample_count)),
             }
         })
         .collect()
@@ -186,10 +188,9 @@ pub fn render_svg(
             coords.join(" ")
         );
     } else {
-        let _ = write!(
+        let _ = writeln!(
             svg,
-            r##"<text x="{cx:.1}" y="{cy:.1}" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, Arial" font-size="15" fill="#94a3b8">所选时间段暂无采集数据</text>
-"##,
+            r##"<text x="{cx:.1}" y="{cy:.1}" text-anchor="middle" font-family="Segoe UI, Microsoft YaHei, Arial" font-size="15" fill="#94a3b8">所选时间段暂无采集数据</text>"##,
             cx = left + plot_w / 2.0,
             cy = top + plot_h / 2.0,
         );
@@ -228,7 +229,9 @@ pub fn render_svg(
 }
 
 fn fmt_opt(value: Option<f64>) -> String {
-    value.map(|v| format!("{v:.1}")).unwrap_or_else(|| "--".to_string())
+    value
+        .map(|v| format!("{v:.1}"))
+        .unwrap_or_else(|| "--".to_string())
 }
 
 fn local_label(time: DateTime<Utc>) -> String {
@@ -247,10 +250,7 @@ fn html_escape(value: &str) -> String {
     xml_escape(value).replace('\'', "&#39;")
 }
 
-pub async fn send_daily_report(
-    state: &AppState,
-    device_id: &str,
-) -> anyhow::Result<ReportResult> {
+pub async fn send_daily_report(state: &AppState, device_id: &str) -> anyhow::Result<ReportResult> {
     let snapshot = state.store.snapshot().await;
     let device = snapshot
         .devices
@@ -279,11 +279,8 @@ pub async fn send_daily_report(
     );
     let csv = readings_csv(&readings)?;
     let local_day = to.with_timezone(&Local).format("%Y-%m-%d").to_string();
-    let recipients = crate::models::notification_recipients(
-        &snapshot,
-        &device.id,
-        &settings.report_recipients,
-    );
+    let recipients =
+        crate::models::notification_recipients(&snapshot, &device.id, &settings.report_recipients);
     if recipients.is_empty() {
         return Err(anyhow::anyhow!("没有可用的日报收件人"));
     }
@@ -311,10 +308,7 @@ pub async fn send_daily_report(
     state.store.push_alert(alert.clone()).await?;
     state.hub.broadcast_alert(&alert);
 
-    let subject = format!(
-        "【声垣日报】{local_day} · {} 环境声学报告",
-        device.name
-    );
+    let subject = format!("【声垣日报】{local_day} · {} 环境声学报告", device.name);
     let text = format!(
         "声垣 SoundGuard · 24 小时环境声学报告\n\n设备：{}\n统计区间：{} — {}\n平均分贝：{} dB\n峰值：{} dB\n最低：{} dB\n超限次数：{} 次\n样本数：{}\n阈值：{:.1} dB\n\n附件包含原始数据 CSV 与统计图 SVG。\n",
         device.name,
@@ -389,6 +383,7 @@ pub async fn send_daily_report(
         },
     ];
 
+    let mut email_error = None;
     let status = if recipients.is_empty() {
         "disabled".to_string()
     } else {
@@ -399,11 +394,12 @@ pub async fn send_daily_report(
         if let Some(error) = &result.error {
             error!("Daily report email status {}: {}", result.status, error);
         }
+        email_error = result.error;
         result.status
     };
     if let Some(updated) = state
         .store
-        .update_alert_email(&alert_id, &status, None)
+        .update_alert_email(&alert_id, &status, email_error)
         .await?
     {
         state.hub.broadcast_alert(&updated);
@@ -423,6 +419,7 @@ pub async fn send_daily_report(
 
 pub fn spawn_daily_report_scheduler(state: AppState) {
     tokio::spawn(async move {
+        let mut retry_after = std::collections::HashMap::<String, std::time::Instant>::new();
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
         loop {
             ticker.tick().await;
@@ -450,19 +447,22 @@ pub fn spawn_daily_report_scheduler(state: AppState) {
                 continue;
             }
             let today = now.format("%Y-%m-%d").to_string();
-            if snapshot.last_daily_report_date.as_deref() == Some(today.as_str()) {
-                continue;
-            }
-            if let Err(error) = state
-                .store
-                .mutate(|state| state.last_daily_report_date = Some(today.clone()))
-                .await
-            {
-                error!("Could not mark daily report date: {error}");
-                continue;
-            }
             for device in snapshot.devices.clone() {
                 let device_id = device.id.clone();
+                if snapshot
+                    .daily_report_dates
+                    .get(&device_id)
+                    .is_some_and(|day| day == &today)
+                    || retry_after
+                        .get(&device_id)
+                        .is_some_and(|retry| *retry > std::time::Instant::now())
+                {
+                    continue;
+                }
+                retry_after.insert(
+                    device_id.clone(),
+                    std::time::Instant::now() + std::time::Duration::from_secs(300),
+                );
                 let from = Utc::now() - Duration::hours(24);
                 let readings = state
                     .store
@@ -473,10 +473,27 @@ pub fn spawn_daily_report_scheduler(state: AppState) {
                     continue;
                 }
                 match send_daily_report(&state, &device_id).await {
-                    Ok(result) => info!(
-                        "Scheduled report sent for {}: {} samples, email {}",
-                        result.device_name, result.sample_count, result.email_status
-                    ),
+                    Ok(result) => {
+                        if matches!(
+                            result.email_status.as_str(),
+                            "sent" | "dry_run" | "disabled"
+                        ) {
+                            if let Err(error) = state
+                                .store
+                                .mutate(|s| {
+                                    s.daily_report_dates
+                                        .insert(device_id.clone(), today.clone());
+                                })
+                                .await
+                            {
+                                error!("Could not persist daily report completion: {error}");
+                            }
+                        }
+                        info!(
+                            "Scheduled report for {}: {} samples, email {}",
+                            result.device_name, result.sample_count, result.email_status
+                        );
+                    }
                     Err(error) => {
                         error!("Scheduled report failed for {device_id}: {error:#}")
                     }
@@ -509,6 +526,18 @@ mod tests {
         let text = String::from_utf8(csv).unwrap();
         assert!(text.contains("avg_db"));
         assert!(text.contains("50.0"));
+    }
+
+    #[test]
+    fn leq_is_energy_and_duration_weighted() {
+        let mut rows = vec![reading(0, 40.0), reading(30, 80.0)];
+        assert_eq!(Stats::from_readings(&rows).avg_db, Some(77.0));
+        rows[0].duration_secs = 90;
+        assert_eq!(Stats::from_readings(&rows).avg_db, Some(74.0));
+        let sampled = downsample(&[rows.clone(), rows.clone()].concat(), 2);
+        assert_eq!(sampled.len(), 2);
+        assert_eq!(sampled[0].avg_db, 74.0);
+        assert_eq!(sampled[0].duration_secs, 120);
     }
 
     #[test]

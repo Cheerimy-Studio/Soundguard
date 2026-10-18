@@ -66,6 +66,11 @@ public class MainActivity extends Activity {
             @Override
             public void onPermissionRequest(final PermissionRequest request) {
                 runOnUiThread(() -> {
+                    Uri origin = request.getOrigin();
+                    if (!"https".equals(origin.getScheme()) || !"appassets.androidplatform.net".equals(origin.getHost())) {
+                        request.deny();
+                        return;
+                    }
                     boolean micGranted = checkSelfPermission(Manifest.permission.RECORD_AUDIO)
                             == PackageManager.PERMISSION_GRANTED;
                     if (!micGranted) {
@@ -103,9 +108,12 @@ public class MainActivity extends Activity {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 String url = request.getUrl().toString();
-                if (url.startsWith("https://appassets.androidplatform.net/")) {
+                Uri uri = request.getUrl();
+                if ("https".equals(uri.getScheme()) && "appassets.androidplatform.net".equals(uri.getHost())
+                        && uri.getPath() != null && uri.getPath().startsWith("/assets/")) {
                     return false;
                 }
+                if (!request.isForMainFrame() || !("https".equals(uri.getScheme()) || "http".equals(uri.getScheme()))) return true;
                 try {
                     startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
                 } catch (Exception ignored) {

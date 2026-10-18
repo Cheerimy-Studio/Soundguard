@@ -69,7 +69,7 @@ public class MonitorService extends Service {
         startPolling();
     }
 
-    private void loadSession() {
+    private synchronized void loadSession() {
         serverUrl = prefs.getString("server_url", "");
         token = prefs.getString("token", "");
         deviceId = prefs.getString("device_id", "");
@@ -171,16 +171,22 @@ public class MonitorService extends Service {
     }
 
     private Status fetchStatus() throws Exception {
-        String encoded = URLEncoder.encode(deviceId, "UTF-8");
+        final String requestServer, requestToken, requestDevice;
+        synchronized (this) { requestServer = serverUrl; requestToken = token; requestDevice = deviceId; }
+        String encoded = URLEncoder.encode(requestDevice, "UTF-8");
         HttpURLConnection connection = (HttpURLConnection) new URL(
-                serverUrl + "/api/devices/" + encoded + "/status").openConnection();
+                requestServer + "/api/devices/" + encoded + "/status").openConnection();
         connection.setConnectTimeout(6000);
         connection.setReadTimeout(7000);
         connection.setRequestMethod("GET");
+        connection.setInstanceFollowRedirects(false);
         connection.setRequestProperty("Accept", "application/json");
-        connection.setRequestProperty("Authorization", "Bearer " + token);
+        connection.setRequestProperty("Authorization", "Bearer " + requestToken);
         try {
             int code = connection.getResponseCode();
+            synchronized (this) {
+                if (!requestServer.equals(serverUrl) || !requestToken.equals(token) || !requestDevice.equals(deviceId)) return new Status();
+            }
             if (code == 401 || code == 403) {
                 Status status = new Status();
                 status.unauthorized = true;
@@ -191,6 +197,9 @@ public class MonitorService extends Service {
             }
             String body = readBody(connection.getInputStream());
             Status status = new Status();
+            status.server = requestServer;
+            status.token = requestToken;
+            status.device = requestDevice;
             status.ok = true;
             status.json = new JSONObject(body);
             return status;
@@ -211,7 +220,8 @@ public class MonitorService extends Service {
         return builder.toString();
     }
 
-    private void handleStatus(Status status) {
+    private synchronized void handleStatus(Status status) {
+        if (!serverUrl.equals(status.server) || !token.equals(status.token) || !deviceId.equals(status.device)) return;
         JSONObject root = status.json;
         JSONObject device = root.optJSONObject("device");
         if (device == null) {
@@ -231,6 +241,9 @@ public class MonitorService extends Service {
         double current = device.optDouble("currentDb", Double.NaN);
         double average = device.optDouble("liveAvgDb", current);
         boolean suspended = device.optBoolean("liveSuspended", false);
+        boolean monitoring = device.optBoolean("monitoring", false);
+        boolean ignoringSystem = device.optBoolean("liveSystemPlaying", false)
+                && !device.optBoolean("liveAecEnabled", false);
 
         JSONObject alert = root.optJSONObject("latestNoiseAlert");
         String alertId = alert == null ? "" : alert.optString("id", "");
@@ -248,7 +261,7 @@ public class MonitorService extends Service {
                     .putString("last_alert_id", lastAlertId)
                     .putLong("last_fallback_at", lastFallbackAt)
                     .apply();
-        } else if (online && !suspended
+        } else if (online && monitoring && !suspended && !ignoringSystem
                 && !Double.isNaN(average) && average >= threshold
                 && System.currentTimeMillis() - lastFallbackAt > FALLBACK_COOLDOWN_MS) {
             lastFallbackAt = System.currentTimeMillis();
@@ -259,7 +272,9 @@ public class MonitorService extends Service {
 
         if (!online) {
             updateServiceNotification("设备暂时离线 · 等待采集端重新连接");
-        } else if (suspended) {
+        } else if (!monitoring) {
+            updateServiceNotification("采集已暂停 · 等待恢复");
+        } else if (suspended || ignoringSystem) {
             updateServiceNotification("通话中 · 分贝监测暂停");
         } else if (!Double.isNaN(average)) {
             updateServiceNotification(String.format(Locale.CHINA,
@@ -369,6 +384,7 @@ public class MonitorService extends Service {
     }
 
     private static class Status {
+        String server, token, device;
         boolean ok;
         boolean unauthorized;
         JSONObject json;

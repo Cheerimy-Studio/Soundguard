@@ -766,6 +766,7 @@
     });
     socket.addEventListener("close", () => {
       if (generation !== state.wsGeneration) return;
+      endCall(false);
       state.ws = null;
       setSignalState(false, "未连接");
       scheduleSignalingReconnect(generation);
@@ -1236,7 +1237,7 @@
   }
 
   async function verifySettingsPin() {
-    const pin = els.settingsPin.value.trim();
+    const pin = els.settingsPin.value;
     if (!pin) {
       els.settingsAuthError.hidden = false;
       els.settingsAuthError.textContent = "请输入本地密码";
@@ -1354,7 +1355,7 @@
   }
 
   async function requestExit() {
-    const pin = els.exitPin.value.trim();
+    const pin = els.exitPin.value;
     if (!pin) {
       els.exitError.hidden = false;
       els.exitError.textContent = "请输入密码";
@@ -1604,9 +1605,9 @@
     if (!isDesktop) return;
     const password = els.setupPassword.value;
     const confirmPassword = els.setupConfirmPassword.value;
-    if (password.length < 6) {
+    if ([...password].length < 8 || [...password].length > 128) {
       els.setupError.hidden = false;
-      els.setupError.textContent = "本地密码至少需要 6 个字符";
+      els.setupError.textContent = "本地密码需要 8–128 个字符";
       return;
     }
     if (password !== confirmPassword) {

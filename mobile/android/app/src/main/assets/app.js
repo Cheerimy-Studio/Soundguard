@@ -237,6 +237,7 @@
     try {
       response = await fetch(`${state.server}/api${path}`, {
         cache: "no-store",
+        signal: AbortSignal.timeout(20000),
         ...options,
         headers,
       });
@@ -266,6 +267,7 @@
     try {
       response = await fetch(`${state.server}/api${path}`, {
         cache: "no-store",
+        signal: AbortSignal.timeout(30000),
         headers: state.token ? { Authorization: `Bearer ${state.token}` } : {},
       });
     } catch (error) {
@@ -961,6 +963,7 @@
     };
     socket.onclose = () => {
       if (state.ws === socket) {
+        if (call.active) void endCall(false);
         state.ws = null;
         setConnection(false);
         renderDashboard();
@@ -998,6 +1001,14 @@
     return true;
   }
 
+  function effectiveSettings(base, device) {
+    const result = { ...base };
+    for (const key of ["thresholdDb", "alertCooldownSecs", "offlineTimeoutSecs", "autoRecordEvidence"]) {
+      if (device?.settings?.[key] != null) result[key] = device.settings[key];
+    }
+    return result;
+  }
+
   function handleSocketMessage(message) {
     if (!message || !message.type) return;
     switch (message.type) {
@@ -1005,7 +1016,8 @@
         const data = message.data || {};
         state.devices = data.devices || state.devices;
         if (data.settings) {
-          state.settings = data.settings;
+          state.globalSettings = data.settings;
+          state.settings = effectiveSettings(data.settings, state.device);
           renderAnnouncement();
         }
         const selected = state.devices.find((device) => device.id === state.selectedDeviceId);
@@ -1038,6 +1050,7 @@
         state.devices = state.devices.map((device) => (device.id === updated.id ? updated : device));
         if (updated.id === state.selectedDeviceId) {
           state.device = updated;
+          state.settings = effectiveSettings(state.globalSettings || state.settings, updated);
           renderDashboard();
         }
         break;
@@ -1054,7 +1067,8 @@
       }
       case "settings": {
         if (message.data) {
-          state.settings = message.data;
+          state.globalSettings = message.data;
+          state.settings = effectiveSettings(message.data, state.device);
           renderAnnouncement();
           renderDashboard();
           drawChart();
@@ -1065,7 +1079,13 @@
         const alert = message.data;
         if (!alert || alert.deviceId !== state.selectedDeviceId) break;
         if (["noise", "offline", "tamper"].includes(alert.kind) && state.overview) {
-          state.overview.alertCountToday = (state.overview.alertCountToday || 0) + 1;
+          state.seenAlerts ||= new Set();
+          if (!state.seenAlerts.has(alert.id)) {
+            state.seenAlerts.add(alert.id);
+            if (new Date(alert.createdAt).toDateString() === new Date().toDateString()) {
+              state.overview.alertCountToday = (state.overview.alertCountToday || 0) + 1;
+            }
+          }
         }
         if (alert.kind === "noise") {
           showOverBanner(alert.message || `平均 ${number(alert.db)} dB，超过设定阈值`);
@@ -1609,8 +1629,17 @@
         audioBitsPerSecond: 192000,
       });
       call.chunks = [];
+      const chunks = call.chunks;
+      let recordingBytes = 0;
       recorder.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0) call.chunks.push(event.data);
+        if (event.data && event.data.size > 0) {
+          chunks.push(event.data);
+          recordingBytes += event.data.size;
+          if (recordingBytes >= 8 * 1024 * 1024 && recorder.state !== "inactive") {
+            recorder.stop();
+            toast("通话较长，本次录音已达到容量上限；语音连接继续保持");
+          }
+        }
       };
       recorder.start(1000);
       call.recorder = recorder;
@@ -1638,6 +1667,8 @@
   async function endCall(sendHangup = true, message = "") {
     if (!call.active || call.ending) return;
     call.ending = true;
+    const recordingServer = state.server;
+    const recordingToken = state.token;
     const snapshot = {
       callId: call.callId,
       deviceId: call.deviceId,
@@ -1672,7 +1703,8 @@
     $("remoteAudio").muted = false;
     setAndroidCommunicationMode(false);
 
-    let blob = null;
+    let blob = snapshot.chunks.length > 0
+      ? new Blob(snapshot.chunks, { type: snapshot.mime || "audio/webm" }) : null;
     if (snapshot.recorder && snapshot.recorder.state !== "inactive") {
       blob = await new Promise((resolve) => {
         let settled = false;
@@ -1731,8 +1763,10 @@
         }
       }
       try {
-        await request("/calls", {
+        const response = await fetch(`${recordingServer}/api/calls`, {
           method: "POST",
+          signal: AbortSignal.timeout(30000),
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${recordingToken}` },
           body: JSON.stringify({
             deviceId: snapshot.deviceId,
             mode: snapshot.mode === "broadcast" ? "broadcast" : "intercom",
@@ -1743,7 +1777,8 @@
             audioMime,
           }),
         });
-        if (snapshot.deviceId === state.selectedDeviceId) loadRecords();
+        if (!response.ok) throw new Error(`通话记录保存失败（${response.status}）`);
+        if (recordingToken === state.token && snapshot.deviceId === state.selectedDeviceId) loadRecords();
       } catch (error) {
         console.warn("call record upload failed", error);
       }
@@ -1805,6 +1840,8 @@
     state.devices = [];
     state.device = null;
     state.settings = null;
+    state.globalSettings = null;
+    state.seenAlerts = new Set();
     state.overview = null;
     state.selectedDeviceId = null;
     state.liveLatest = null;

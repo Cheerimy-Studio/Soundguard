@@ -55,6 +55,17 @@ impl Settings {
         }
         self.daily_report_time = format!("{hour:02}:{minute:02}");
 
+        for raw in self.alert_recipients.iter().chain(&self.report_recipients) {
+            for address in raw
+                .split([',', ';', ' ', '\n'])
+                .map(str::trim)
+                .filter(|a| !a.is_empty())
+            {
+                if address.parse::<lettre::Address>().is_err() {
+                    return Err("收件人邮箱格式不正确".to_string());
+                }
+            }
+        }
         self.alert_recipients = parse_recipients(&self.alert_recipients.join(","));
         self.report_recipients = parse_recipients(&self.report_recipients.join(","));
         if self.alert_recipients.len() > 20 || self.report_recipients.len() > 20 {
@@ -227,6 +238,11 @@ impl Device {
             "waiting"
         };
 
+        let has_measurement = online
+            && self.monitoring
+            && self.capture_error.is_none()
+            && !self.live_suspended
+            && !(self.live_system_playing && !self.live_aec_enabled);
         DeviceView {
             id: self.id.clone(),
             name: self.name.clone(),
@@ -234,8 +250,8 @@ impl Device {
             created_at: self.created_at,
             desired_monitoring: self.desired_monitoring,
             monitoring: self.monitoring,
-            current_db: self.current_db,
-            peak_db: self.peak_db,
+            current_db: has_measurement.then_some(self.current_db).flatten(),
+            peak_db: has_measurement.then_some(self.peak_db).flatten(),
             last_seen: self.last_seen,
             last_reading_at: self.last_reading_at,
             last_stop_at: self.last_stop_at,
@@ -244,7 +260,7 @@ impl Device {
             offline_alert_active: self.offline_alert_active,
             app_version: self.app_version.clone(),
             capture_error: self.capture_error.clone(),
-            live_avg_db: self.live_avg_db,
+            live_avg_db: has_measurement.then_some(self.live_avg_db).flatten(),
             live_suspended: self.live_suspended,
             live_system_playing: self.live_system_playing,
             live_aec_enabled: self.live_aec_enabled,
@@ -274,9 +290,7 @@ fn recipients_from_users(users: &[User], device_id: &str, base: &[String]) -> Ve
         if user.disabled || user.email.trim().is_empty() {
             continue;
         }
-        if user.role.is_super()
-            || user.device_ids.iter().any(|assigned| assigned == device_id)
-        {
+        if user.role.is_super() || user.device_ids.iter().any(|assigned| assigned == device_id) {
             recipients.push(user.email.trim().to_string());
         }
     }
@@ -567,6 +581,8 @@ pub struct PersistedState {
     #[serde(default)]
     pub calls: Vec<CallRecord>,
     pub last_daily_report_date: Option<String>,
+    #[serde(default)]
+    pub daily_report_dates: std::collections::HashMap<String, String>,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -591,7 +607,7 @@ impl Stats {
                 sample_count: 0,
             };
         }
-        let avg = readings.iter().map(|r| r.avg_db).sum::<f64>() / readings.len() as f64;
+        let avg = leq(readings);
         Self {
             avg_db: Some(round1(avg)),
             peak_db: Some(round1(
@@ -610,6 +626,16 @@ impl Stats {
             sample_count: readings.len(),
         }
     }
+}
+
+/// Equivalent continuous sound level, weighted by each measured duration.
+pub fn leq(readings: &[Reading]) -> f64 {
+    let duration: f64 = readings.iter().map(|r| r.duration_secs.max(1) as f64).sum();
+    let energy: f64 = readings
+        .iter()
+        .map(|r| 10f64.powf(r.avg_db / 10.0) * r.duration_secs.max(1) as f64)
+        .sum();
+    10.0 * (energy / duration).max(1e-16).log10()
 }
 
 pub fn round1(value: f64) -> f64 {
@@ -837,7 +863,6 @@ pub struct DeviceListResponse {
     pub devices: Vec<DeviceView>,
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -861,16 +886,28 @@ mod tests {
     fn routes_notifications_to_super_and_assigned_device_admins() {
         let users = vec![
             user("super@example.com", UserRole::SuperAdmin, &[], false),
-            user("assigned@example.com", UserRole::DeviceAdmin, &["dev-a"], false),
-            user("other@example.com", UserRole::DeviceAdmin, &["dev-b"], false),
-            user("disabled@example.com", UserRole::DeviceAdmin, &["dev-a"], true),
+            user(
+                "assigned@example.com",
+                UserRole::DeviceAdmin,
+                &["dev-a"],
+                false,
+            ),
+            user(
+                "other@example.com",
+                UserRole::DeviceAdmin,
+                &["dev-b"],
+                false,
+            ),
+            user(
+                "disabled@example.com",
+                UserRole::DeviceAdmin,
+                &["dev-a"],
+                true,
+            ),
             user("", UserRole::DeviceAdmin, &["dev-a"], false),
         ];
-        let recipients = recipients_from_users(
-            &users,
-            "dev-a",
-            &["global@example.com".to_string()],
-        );
+        let recipients =
+            recipients_from_users(&users, "dev-a", &["global@example.com".to_string()]);
         assert_eq!(
             recipients,
             vec![

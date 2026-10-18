@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, mpsc, Mutex};
@@ -15,7 +12,14 @@ struct DeviceConnection {
 }
 
 #[derive(Clone)]
+struct CallSession {
+    owner: Uuid,
+    call_id: String,
+}
+
+#[derive(Clone)]
 pub struct Hub {
+    calls: Arc<Mutex<HashMap<String, CallSession>>>,
     admin_tx: broadcast::Sender<String>,
     devices: Arc<Mutex<HashMap<String, DeviceConnection>>>,
 }
@@ -24,6 +28,7 @@ impl Hub {
     pub fn new() -> Self {
         let (admin_tx, _) = broadcast::channel(512);
         Self {
+            calls: Arc::new(Mutex::new(HashMap::new())),
             admin_tx,
             devices: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -39,8 +44,9 @@ impl Hub {
             .devices
             .lock()
             .await
-            .insert(device_id, DeviceConnection { id, tx });
+            .insert(device_id.clone(), DeviceConnection { id, tx });
         if previous.is_some() {
+            self.disconnect_call_device(&device_id).await;
             warn!("A previous device signaling connection was replaced");
         }
         id
@@ -81,6 +87,77 @@ impl Hub {
                 }
             }
             None => false,
+        }
+    }
+
+    pub async fn is_current_device(&self, device_id: &str, id: Uuid) -> bool {
+        self.devices
+            .lock()
+            .await
+            .get(device_id)
+            .is_some_and(|c| c.id == id)
+    }
+
+    pub async fn claim_call(&self, device_id: &str, owner: Uuid, call_id: &str) -> bool {
+        let mut calls = self.calls.lock().await;
+        match calls.get(device_id) {
+            Some(call) => call.owner == owner && call.call_id == call_id,
+            None => {
+                calls.insert(
+                    device_id.to_string(),
+                    CallSession {
+                        owner,
+                        call_id: call_id.to_string(),
+                    },
+                );
+                true
+            }
+        }
+    }
+
+    pub async fn call_owner(&self, device_id: &str, call_id: &str) -> Option<Uuid> {
+        self.calls
+            .lock()
+            .await
+            .get(device_id)
+            .filter(|c| c.call_id == call_id)
+            .map(|c| c.owner)
+    }
+
+    pub async fn finish_call(&self, device_id: &str, call_id: &str) {
+        let mut calls = self.calls.lock().await;
+        if calls.get(device_id).is_some_and(|c| c.call_id == call_id) {
+            calls.remove(device_id);
+        }
+    }
+
+    pub async fn disconnect_admin(&self, owner: Uuid) {
+        let sessions = {
+            let mut calls = self.calls.lock().await;
+            let sessions: Vec<_> = calls
+                .iter()
+                .filter(|(_, c)| c.owner == owner)
+                .map(|(device_id, c)| (device_id.clone(), c.call_id.clone()))
+                .collect();
+            calls.retain(|_, c| c.owner != owner);
+            sessions
+        };
+        for (device_id, call_id) in sessions {
+            self.send_to_device(
+                &device_id,
+                json!({"type":"hangup", "from":"admin", "callId":call_id}).to_string(),
+            )
+            .await;
+        }
+    }
+
+    pub async fn disconnect_call_device(&self, device_id: &str) {
+        if let Some(call) = self.calls.lock().await.remove(device_id) {
+            self.broadcast_raw(
+                json!({"type":"hangup", "from":"device", "deviceId":device_id,
+                "callId":call.call_id, "adminConnectionId":call.owner})
+                .to_string(),
+            );
         }
     }
 

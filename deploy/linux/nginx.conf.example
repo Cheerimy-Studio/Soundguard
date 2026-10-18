@@ -1,10 +1,13 @@
 # /etc/nginx/sites-available/soundguard
 # 将 server_name 和证书路径替换为你的域名。WebRTC 需要 HTTPS（或内网 IP + 特殊浏览器配置）。
+# Place this log_format in the nginx http context; it intentionally excludes query strings.
+log_format soundguard_safe '$remote_addr - $remote_user [$time_local] "$request_method $uri $server_protocol" $status $body_bytes_sent';
 server {
     listen 80;
     server_name sound.example.com;
 
-    client_max_body_size 25m;
+    client_max_body_size 18m;
+    access_log /var/log/nginx/soundguard-access.log soundguard_safe;
 
     location / {
         proxy_pass http://127.0.0.1:8080;

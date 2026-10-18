@@ -53,6 +53,8 @@ pub fn spawn_email(
 }
 
 pub fn email_shell(accent: &str, eyebrow: &str, title: &str, body: &str) -> String {
+    let title = html_escape(title);
+    let eyebrow = html_escape(eyebrow);
     format!(
         r##"<div style="font-family:-apple-system,Segoe UI,Microsoft YaHei,Arial,sans-serif;background:#0b1220;padding:28px;color:#e2e8f0">
 <div style="max-width:620px;margin:0 auto;background:#111a2e;border:1px solid #22304a;border-radius:18px;overflow:hidden">

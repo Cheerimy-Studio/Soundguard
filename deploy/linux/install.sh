@@ -7,6 +7,9 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ ! -f "$ROOT_DIR/soundguard-server" ]; then
+  ROOT_DIR="$(cd "$ROOT_DIR/.." && pwd)"
+fi
 DEST=/opt/soundguard
 
 if [ ! -x "$ROOT_DIR/soundguard-server" ]; then
@@ -18,7 +21,11 @@ id soundguard >/dev/null 2>&1 || useradd --system --home-dir "$DEST" --shell /us
 
 install -d -m 0755 -o soundguard -g soundguard "$DEST"
 install -d -m 0700 -o soundguard -g soundguard "$DEST/data"
-install -m 0755 -o soundguard -g soundguard "$ROOT_DIR/soundguard-server" "$DEST/soundguard-server"
+if systemctl is-active --quiet soundguard; then
+  systemctl stop soundguard
+fi
+install -m 0755 -o soundguard -g soundguard "$ROOT_DIR/soundguard-server" "$DEST/soundguard-server.new"
+mv -f "$DEST/soundguard-server.new" "$DEST/soundguard-server"
 install -d -m 0755 -o soundguard -g soundguard "$DEST/deploy"
 install -m 0755 -o soundguard -g soundguard "$ROOT_DIR/deploy/uninstall.sh" "$DEST/deploy/uninstall.sh"
 rm -rf "$DEST/web"
@@ -34,7 +41,7 @@ install -m 0644 "$ROOT_DIR/deploy/soundguard.service" /etc/systemd/system/soundg
 systemctl daemon-reload
 systemctl enable soundguard
 systemctl restart soundguard
-sleep 1
+systemctl is-active --quiet soundguard || { journalctl -u soundguard -n 30 --no-pager; exit 1; }
 
 echo "============================================================"
 echo "声垣服务已启动：http://<服务器IP>:8080"

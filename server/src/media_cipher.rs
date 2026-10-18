@@ -30,12 +30,7 @@ impl MediaCipher {
                 }
                 let mut key = [0u8; 32];
                 rand::rng().fill_bytes(&mut key);
-                fs::write(path, key)?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
-                }
+                crate::private_file::atomic_write(path, &key)?;
                 key.to_vec()
             }
             Err(error) => return Err(error.into()),
@@ -103,8 +98,25 @@ mod tests {
     }
 
     #[test]
+    fn rejects_modified_ciphertext_and_wrong_keys() {
+        let cipher = MediaCipher::from_key([7; 32]);
+        let mut encrypted = cipher.encrypt(b"private audio").unwrap();
+        assert!(MediaCipher::from_key([8; 32]).decrypt(&encrypted).is_err());
+        let last = encrypted.len() - 1;
+        encrypted[last] ^= 1;
+        assert!(cipher.decrypt(&encrypted).is_err());
+        assert_ne!(
+            cipher.encrypt(b"same").unwrap(),
+            cipher.encrypt(b"same").unwrap()
+        );
+    }
+
+    #[test]
     fn keeps_legacy_plaintext_readable() {
         let cipher = MediaCipher::from_key([9u8; 32]);
-        assert_eq!(cipher.decrypt(b"legacy wav").expect("plaintext"), b"legacy wav");
+        assert_eq!(
+            cipher.decrypt(b"legacy wav").expect("plaintext"),
+            b"legacy wav"
+        );
     }
 }

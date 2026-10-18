@@ -6,15 +6,15 @@ use std::{
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
 use tokio::sync::Mutex;
-use tracing::{error, warn};
+use tracing::warn;
 
 use crate::{
     auth::{generate_password, hash_password, hash_token},
     config::Config,
     media_cipher::MediaCipher,
     models::{
-        Alert, CallRecord, Device, PersistedState, Reading, Settings, User, UserRole, MAX_ALERTS,
-        MAX_CALLS,
+        Alert, CallRecord, Device, LiveRequest, PersistedState, Reading, Settings, User, UserRole,
+        MAX_ALERTS, MAX_CALLS,
     },
 };
 
@@ -34,12 +34,18 @@ struct StoredState {
     calls: Vec<CallRecord>,
     #[serde(default)]
     last_daily_report_date: Option<String>,
+    #[serde(default)]
+    daily_report_dates: std::collections::HashMap<String, String>,
 }
+
+type ReadingIndex =
+    std::collections::HashMap<NaiveDate, std::collections::HashSet<(String, DateTime<Utc>)>>;
 
 pub struct Store {
     data_dir: PathBuf,
     state: Mutex<PersistedState>,
     media_cipher: MediaCipher,
+    reading_write: Mutex<ReadingIndex>,
 }
 
 impl Store {
@@ -48,16 +54,11 @@ impl Store {
         let state_path = config.data_path("state.json");
 
         let mut stored = match tokio::fs::read_to_string(&state_path).await {
-            Ok(raw) => match serde_json::from_str::<StoredState>(&raw) {
-                Ok(state) => Some(state),
-                Err(error) => {
-                    error!("Could not parse state.json: {error}");
-                    let backup = config.data_path("state.json.corrupt");
-                    let _ = tokio::fs::copy(&state_path, backup).await;
-                    None
-                }
-            },
-            Err(_) => None,
+            Ok(raw) => Some(serde_json::from_str::<StoredState>(&raw).map_err(|error| {
+                anyhow::anyhow!("state.json is invalid; restore from backup: {error}")
+            })?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
         };
 
         let mut settings = stored
@@ -192,7 +193,7 @@ impl Store {
             .as_mut()
             .map(|state| std::mem::take(&mut state.calls))
             .unwrap_or_default();
-        calls.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        calls.sort_by_key(|call| std::cmp::Reverse(call.created_at));
         calls.truncate(MAX_CALLS);
 
         let state = PersistedState {
@@ -205,15 +206,35 @@ impl Store {
             last_daily_report_date: stored
                 .as_ref()
                 .and_then(|value| value.last_daily_report_date.clone()),
+            daily_report_dates: stored
+                .as_ref()
+                .map(|s| s.daily_report_dates.clone())
+                .unwrap_or_default(),
             updated_at: Utc::now(),
         };
 
+        if !config.media_key_file.exists() {
+            for folder in ["evidence", "calls"] {
+                let mut entries = tokio::fs::read_dir(config.data_path(folder)).await?;
+                while let Some(entry) = entries.next_entry().await? {
+                    if entry.file_type().await?.is_file() {
+                        use tokio::io::AsyncReadExt;
+                        let mut file = tokio::fs::File::open(entry.path()).await?;
+                        let mut magic = [0; 5];
+                        if file.read_exact(&mut magic).await.is_ok() && &magic == b"SGME1" {
+                            anyhow::bail!("Encrypted media exists but MEDIA_KEY_FILE is missing; restore the original key");
+                        }
+                    }
+                }
+            }
+        }
         let media_cipher = MediaCipher::load_or_create(&config.media_key_file)?;
-        migrate_plaintext_media(&config, &media_cipher).await?;
+        migrate_plaintext_media(config, &media_cipher).await?;
         let store = Arc::new(Self {
             data_dir: config.data_dir.clone(),
             state: Mutex::new(state),
             media_cipher,
+            reading_write: Mutex::new(std::collections::HashMap::new()),
         });
         store.persist().await?;
         Ok(store)
@@ -235,6 +256,15 @@ impl Store {
             .iter()
             .find(|device| device.id == device_id)
             .cloned()
+    }
+
+    pub async fn authenticates_token(&self, hash: &str) -> bool {
+        self.state
+            .lock()
+            .await
+            .devices
+            .iter()
+            .any(|d| !d.token_hash.is_empty() && crate::auth::secure_eq(&d.token_hash, hash))
     }
 
     pub async fn user(&self, user_id: &str) -> Option<User> {
@@ -305,16 +335,14 @@ impl Store {
 
     pub async fn mutate<T>(&self, f: impl FnOnce(&mut PersistedState) -> T) -> anyhow::Result<T> {
         let mut state = self.state.lock().await;
-        let result = f(&mut state);
-        state.version = 3;
-        state.updated_at = Utc::now();
-        if state.alerts.len() > MAX_ALERTS {
-            state.alerts.truncate(MAX_ALERTS);
-        }
-        if state.calls.len() > MAX_CALLS {
-            state.calls.truncate(MAX_CALLS);
-        }
-        self.persist_locked(&state).await?;
+        let mut next = state.clone();
+        let result = f(&mut next);
+        next.version = 3;
+        next.updated_at = Utc::now();
+        next.alerts.truncate(MAX_ALERTS);
+        next.calls.truncate(MAX_CALLS);
+        self.persist_locked(&next).await?;
+        *state = next;
         Ok(result)
     }
 
@@ -326,33 +354,26 @@ impl Store {
         .await
     }
 
-    pub async fn update_live(
-        &self,
-        device_id: &str,
-        current_db: f64,
-        average_db: Option<f64>,
-        peak_db: Option<f64>,
-        capturing: bool,
-        suspended: bool,
-        system_playing: bool,
-        aec_enabled: bool,
-    ) -> Option<crate::models::DeviceView> {
+    pub async fn update_live(&self, request: &LiveRequest) -> Option<crate::models::DeviceView> {
         let now = Utc::now();
         let mut state = self.state.lock().await;
         let settings = state.settings.clone();
         let device = state
             .devices
             .iter_mut()
-            .find(|device| device.id == device_id)?;
+            .find(|device| device.id == request.device_id)?;
         let offline = crate::models::effective_settings(&settings, device).offline_timeout_secs;
-        device.current_db = Some(current_db);
-        device.live_avg_db = average_db;
-        device.peak_db = peak_db.or(device.peak_db);
-        device.live_suspended = suspended;
-        device.live_system_playing = system_playing;
-        device.live_aec_enabled = aec_enabled;
-        if !suspended {
-            device.monitoring = capturing;
+        device.current_db = Some(crate::models::round1(request.current_db));
+        device.live_avg_db = request.average_db.map(crate::models::round1);
+        device.peak_db = request
+            .peak_db
+            .map(crate::models::round1)
+            .or(device.peak_db);
+        device.live_suspended = request.suspended;
+        device.live_system_playing = request.system_playing;
+        device.live_aec_enabled = request.aec_enabled;
+        if !request.suspended {
+            device.monitoring = request.capturing;
         }
         Some(device.view(now, offline))
     }
@@ -398,23 +419,68 @@ impl Store {
         .await
     }
 
-    pub async fn append_reading(&self, reading: &Reading) -> anyhow::Result<()> {
+    pub async fn append_reading(&self, reading: &Reading) -> anyhow::Result<bool> {
+        let mut indexes = self.reading_write.lock().await;
         let dir = self.data_dir.join("readings");
         tokio::fs::create_dir_all(&dir).await?;
-        let path = dir.join(format!(
-            "{}.jsonl",
-            reading.recorded_at.format("%Y-%m-%d")
-        ));
+        let path = dir.join(format!("{}.jsonl", reading.recorded_at.format("%Y-%m-%d")));
+        let date = reading.recorded_at.date_naive();
+        if !indexes.contains_key(&date) {
+            // Keep a small date cache; disk remains the authoritative deduplication index.
+            if indexes.len() >= 3 {
+                indexes.clear();
+            }
+            let mut index = std::collections::HashSet::new();
+            match tokio::fs::read_to_string(&path).await {
+                Ok(raw) => {
+                    let complete_len = if raw.ends_with('\n') {
+                        raw.len()
+                    } else {
+                        match raw.rfind('\n') {
+                            Some(offset) => offset + 1,
+                            None => 0,
+                        }
+                    };
+                    if complete_len < raw.len() {
+                        // A missing newline indicates an interrupted append from this writer.
+                        let file = tokio::fs::OpenOptions::new()
+                            .write(true)
+                            .open(&path)
+                            .await?;
+                        file.set_len(complete_len as u64).await?;
+                        file.sync_data().await?;
+                        warn!("Repaired an incomplete final telemetry row");
+                    }
+                    for line in raw[..complete_len].lines() {
+                        if let Ok(row) = serde_json::from_str::<Reading>(line) {
+                            index.insert((row.device_id, row.recorded_at));
+                        }
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+            indexes.insert(date, index);
+        }
+        let key = (reading.device_id.clone(), reading.recorded_at);
+        if indexes[&date].contains(&key) {
+            return Ok(false);
+        }
         let mut line = serde_json::to_string(reading)?;
         line.push('\n');
         use tokio::io::AsyncWriteExt;
-        let mut file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .await?;
+        let mut options = tokio::fs::OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options.open(path).await?;
         file.write_all(line.as_bytes()).await?;
-        Ok(())
+        file.sync_data().await?;
+        indexes
+            .get_mut(&date)
+            .expect("initialized index")
+            .insert(key);
+        Ok(true)
     }
 
     pub async fn read_readings_for(
@@ -427,11 +493,13 @@ impl Store {
         let mut date: NaiveDate = from.date_naive();
         let last_date = to.date_naive();
         while date <= last_date {
-            let path = self
-                .data_dir
-                .join("readings")
-                .join(format!("{date}.jsonl"));
-            if let Ok(raw) = tokio::fs::read_to_string(path).await {
+            let path = self.data_dir.join("readings").join(format!("{date}.jsonl"));
+            let raw = match tokio::fs::read_to_string(path).await {
+                Ok(raw) => Some(raw),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.into()),
+            };
+            if let Some(raw) = raw {
                 for line in raw.lines() {
                     if line.trim().is_empty() {
                         continue;
@@ -466,7 +534,10 @@ impl Store {
             .chars()
             .take(8)
             .collect::<String>();
-        let filename = format!("{prefix}-{}-{short}.wav", Utc::now().format("%Y%m%d-%H%M%S"));
+        let filename = format!(
+            "{prefix}-{}-{short}.wav",
+            Utc::now().format("%Y%m%d-%H%M%S")
+        );
         let encrypted = self.media_cipher.encrypt(bytes)?;
         write_private(&dir.join(&filename), &encrypted).await?;
         Ok(filename)
@@ -488,6 +559,7 @@ impl Store {
         let extension = match extension {
             "wav" => "wav",
             "mp4" => "mp4",
+            "ogg" => "ogg",
             _ => "webm",
         };
         let short = uuid::Uuid::new_v4()
@@ -532,10 +604,47 @@ impl Store {
                 .and_then(|stem| stem.to_str())
                 .unwrap_or_default();
             if let Ok(date) = NaiveDate::parse_from_str(stem, "%Y-%m-%d") {
-                if date < cutoff {
-                    if tokio::fs::remove_file(&path).await.is_ok() {
-                        removed += 1;
-                    }
+                if date < cutoff && tokio::fs::remove_file(&path).await.is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+        Ok(removed)
+    }
+
+    /// Enforce retention for records and orphaned/expired media as well as JSONL.
+    pub async fn cleanup_media(&self, retention_days: u32) -> anyhow::Result<usize> {
+        let cutoff = Utc::now() - chrono::Duration::days(retention_days as i64);
+        let referenced = self
+            .mutate(|state| {
+                state.alerts.retain(|alert| alert.created_at >= cutoff);
+                state.calls.retain(|call| call.created_at >= cutoff);
+                state
+                    .alerts
+                    .iter()
+                    .filter_map(|a| a.evidence_file.clone())
+                    .chain(state.calls.iter().filter_map(|c| c.audio_file.clone()))
+                    .collect::<std::collections::HashSet<_>>()
+            })
+            .await?;
+        let mut removed = 0;
+        for folder in ["evidence", "calls", "outbox"] {
+            let mut entries = tokio::fs::read_dir(self.data_dir.join(folder)).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                if !entry.file_type().await?.is_file() {
+                    continue;
+                }
+                let metadata = entry.metadata().await?;
+                let modified: DateTime<Utc> = metadata.modified()?.into();
+                let filename = entry.file_name().to_string_lossy().into_owned();
+                let expired = folder == "outbox" && modified < cutoff;
+                // Grace period protects an in-progress upload not yet linked to a record.
+                let orphan = folder != "outbox"
+                    && !referenced.contains(&filename)
+                    && modified < Utc::now() - chrono::Duration::hours(1);
+                if expired || orphan {
+                    tokio::fs::remove_file(entry.path()).await?;
+                    removed += 1;
                 }
             }
         }
@@ -549,13 +658,10 @@ impl Store {
 
     async fn persist_locked(&self, state: &PersistedState) -> anyhow::Result<()> {
         let path = self.data_dir.join("state.json");
-        let temp = self.data_dir.join("state.json.tmp");
         let bytes = serde_json::to_vec_pretty(state)?;
-        write_private(&temp, &bytes).await?;
-        if tokio::fs::rename(&temp, &path).await.is_err() {
-            let _ = tokio::fs::remove_file(&path).await;
-            tokio::fs::rename(&temp, &path).await?;
-        }
+        // No await between the disk commit and publication of the in-memory
+        // snapshot: cancellation cannot leave the two versions divergent.
+        crate::private_file::atomic_write(&path, &bytes)?;
         Ok(())
     }
 }
@@ -565,7 +671,9 @@ pub fn safe_filename(raw: &str) -> anyhow::Result<String> {
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| anyhow::anyhow!("invalid filename"))?;
-    if name.is_empty()
+    if name != raw
+        || matches!(name, "." | "..")
+        || name.is_empty()
         || !name
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
@@ -575,11 +683,7 @@ pub fn safe_filename(raw: &str) -> anyhow::Result<String> {
     Ok(name.to_string())
 }
 
-
-async fn migrate_plaintext_media(
-    config: &Config,
-    cipher: &MediaCipher,
-) -> anyhow::Result<()> {
+async fn migrate_plaintext_media(config: &Config, cipher: &MediaCipher) -> anyhow::Result<()> {
     let mut migrated = 0usize;
     for folder in ["evidence", "calls"] {
         let dir = config.data_path(folder);
@@ -594,6 +698,7 @@ async fn migrate_plaintext_media(
             }
             let stored = tokio::fs::read(&path).await?;
             if stored.starts_with(b"SGME1") {
+                cipher.decrypt(&stored)?;
                 continue;
             }
             let encrypted = cipher.encrypt(&stored)?;
@@ -602,39 +707,38 @@ async fn migrate_plaintext_media(
         }
     }
     if migrated > 0 {
-        tracing::info!(
-            "Encrypted {migrated} existing media file(s) with AES-256-GCM"
-        );
+        tracing::info!("Encrypted {migrated} existing media file(s) with AES-256-GCM");
     }
     Ok(())
 }
 
 async fn write_private(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
-    tokio::fs::write(path, bytes).await?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = tokio::fs::set_permissions(
-            path,
-            std::fs::Permissions::from_mode(0o600),
-        )
-        .await;
-    }
-    Ok(())
+    crate::private_file::atomic_write(path, bytes)
 }
 
 fn write_initial_admin_password(config: &Config, password: &str) -> anyhow::Result<()> {
     let path = config.data_path("initial-admin-password.txt");
-    std::fs::write(
-        &path,
-        format!(
-            "# 声垣初始超级管理员账号\n用户名: admin\n密码: {password}\n请首次登录后立即在用户管理中修改密码，并删除本文件。\n"
-        ),
-    )?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    crate::private_file::atomic_write(&path, format!(
+        "# 声垣初始超级管理员账号\n用户名: admin\n密码: {password}\n请首次登录后立即修改密码，并删除本文件。\n"
+    ).as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn filenames_reject_paths_and_parent_components() {
+        for name in [
+            "..",
+            ".",
+            "../secret",
+            "/tmp/secret",
+            "a/b.wav",
+            "a\\b.wav",
+            "bad name.wav",
+        ] {
+            assert!(safe_filename(name).is_err(), "{name}");
+        }
+        assert_eq!(safe_filename("alert-123.wav").unwrap(), "alert-123.wav");
     }
-    Ok(())
 }

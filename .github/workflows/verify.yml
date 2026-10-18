@@ -1,0 +1,50 @@
+name: Verify SoundGuard
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  server-and-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: rustup update stable --no-self-update
+      - run: rustup component add clippy rustfmt
+      - run: npm ci --prefix web
+      - run: npm run build:web
+      - run: cargo test --locked --manifest-path server/Cargo.toml
+      - run: cargo clippy --locked --all-targets --manifest-path server/Cargo.toml -- -D warnings
+      - run: bash scripts/test-client-core.sh
+      - run: cargo build --locked --manifest-path server/Cargo.toml
+      - run: node scripts/test-integration.mjs
+      - run: node --check client/ui/app.js && node --check mobile/android/app/src/main/assets/app.js
+  windows-collector:
+    runs-on: windows-latest
+    env:
+      TAURI_CONFIG: '{"bundle":{"windows":{"webviewInstallMode":{"type":"skip"}}}}'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - manifest: client/src-tauri/Cargo.toml
+            toolchain: stable
+          - manifest: client-win7/src-tauri/Cargo.toml
+            toolchain: '1.77.2'
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install ${{ matrix.toolchain }} --profile minimal
+      - run: cargo +${{ matrix.toolchain }} check --locked --manifest-path ${{ matrix.manifest }}
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - working-directory: mobile/android
+        run: bash gradlew --no-daemon assembleDebug

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "../api";
+import { api, getToken } from "../api";
 import type { IntercomMode, LiveMessage, SignalPayload } from "../types";
 
 export type IntercomPhase = "idle" | "requesting" | "connecting" | "active" | "error";
@@ -29,6 +29,8 @@ interface Options {
 }
 
 interface RecordingSession {
+  sessionToken: string | null;
+  segmentTimer: number | null;
   callId: string;
   deviceId: string;
   mode: IntercomMode;
@@ -216,6 +218,7 @@ export function useIntercom({
   }, []);
 
   const finalizeRecording = useCallback(async (session: RecordingSession) => {
+    if (session.segmentTimer !== null) window.clearTimeout(session.segmentTimer);
     const endedAt = new Date();
     let blob: Blob | null = null;
     if (session.recorder && session.recorder.state !== "inactive") {
@@ -265,18 +268,20 @@ export function useIntercom({
         status: "completed",
         audioBase64,
         audioMime,
-      });
+      }, session.sessionToken);
     } catch (error) {
       console.warn("Call recording upload failed", error);
     }
   }, []);
 
   const startRecording = useCallback(
-    (callId: string, callMode: IntercomMode, stream: MediaStream) => {
+    function beginRecording(callId: string, callMode: IntercomMode, stream: MediaStream) {
       if (recordingRef.current) return;
       const device = deviceIdRef.current;
       if (!device) return;
       const session: RecordingSession = {
+        sessionToken: getToken(),
+        segmentTimer: null,
         callId,
         deviceId: device,
         mode: callMode,
@@ -288,6 +293,13 @@ export function useIntercom({
         remoteSource: null,
       };
       recordingRef.current = session;
+      // Bound memory and upload sizes during long-running calls.
+      session.segmentTimer = window.setTimeout(() => {
+        if (recordingRef.current !== session || callIdRef.current !== callId) return;
+        recordingRef.current = null;
+        void finalizeRecording(session);
+        beginRecording(callId, callMode, stream);
+      }, 240_000);
       try {
         const AudioContextClass =
           window.AudioContext ||
@@ -310,8 +322,19 @@ export function useIntercom({
             ...(mimeType ? { mimeType } : {}),
             audioBitsPerSecond: 192_000,
           });
+          session.context = context;
+          session.destination = destination;
+          let recordedBytes = 0;
           recorder.ondataavailable = (event) => {
-            if (event.data.size > 0) session.chunks.push(event.data);
+            if (event.data.size > 0) {
+              session.chunks.push(event.data);
+              recordedBytes += event.data.size;
+              if (recordedBytes >= 8 * 1024 * 1024 && recordingRef.current === session) {
+                recordingRef.current = null;
+                void finalizeRecording(session);
+                if (callIdRef.current === callId) beginRecording(callId, callMode, stream);
+              }
+            }
           };
           recorder.start(1000);
           session.context = context;
@@ -334,7 +357,7 @@ export function useIntercom({
         // Metadata-only call records still work when MediaRecorder is unavailable.
       }
     },
-    [],
+    [finalizeRecording],
   );
 
   const attachRemoteToRecording = useCallback((stream: MediaStream) => {
@@ -352,6 +375,8 @@ export function useIntercom({
   const resetCall = useCallback(
     (nextPhase: IntercomPhase = "idle", nextError: string | null = null) => {
       clearTimers();
+      const closingCall = callIdRef.current;
+      if (closingCall) sendSignal({ type: "hangup", callId: closingCall, deviceId: deviceIdRef.current, to: "device" });
       const session = recordingRef.current;
       recordingRef.current = null;
       if (session) {
@@ -383,7 +408,7 @@ export function useIntercom({
       }
       updatePhase(nextPhase);
     },
-    [clearTimers, finalizeRecording, updatePhase],
+    [clearTimers, finalizeRecording, updatePhase, sendSignal],
   );
 
   useEffect(() => {
@@ -520,6 +545,7 @@ export function useIntercom({
         const activeStream = stream;
         audioGuardRef.current = createCallAudioGuard(activeStream);
 
+        if (!deviceIdRef.current) throw new Error("请先选择设备");
         const pc = new RTCPeerConnection({
           iceServers,
           iceCandidatePoolSize: 4,
@@ -546,7 +572,7 @@ export function useIntercom({
           if (mountedRef.current) setRemoteStream(streamFromPeer);
         };
         pc.onconnectionstatechange = () => {
-          if (!pcRef.current) return;
+          if (pcRef.current !== pc || callIdRef.current !== callId) return;
           if (pc.connectionState === "connected") {
             clearTimers();
             if (phaseRef.current !== "active") {
@@ -567,6 +593,7 @@ export function useIntercom({
         updatePhase("connecting");
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
+        if (pcRef.current !== pc || callIdRef.current !== callId) return;
         const sent = sendSignal({
           type: "signal",
           callId,

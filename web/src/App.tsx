@@ -13,6 +13,7 @@ import {
   Wifi,
   WifiOff,
 } from "lucide-react";
+import { effectiveSettings } from "./lib/settings";
 import { api, adminWebSocketUrl, clearToken, getToken } from "./api";
 import { Login } from "./components/Login";
 import { CallDock } from "./components/Intercom";
@@ -107,6 +108,10 @@ export default function App() {
     localStorage.getItem("soundguard.deviceId"),
   );
   const overviewRef = useRef<Overview | null>(null);
+  const loadGeneration = useRef(0);
+  const loadDeviceRef = useRef<(id: string | null) => Promise<void>>(async () => {});
+  const hangupRef = useRef<() => void>(() => {});
+  const globalSettingsRef = useRef<Settings | null>(null);
 
   const notify = useCallback((message: string, tone: ToastState["tone"] = "info") => {
     if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
@@ -143,6 +148,8 @@ export default function App() {
     deviceId: selectedDeviceId,
   });
 
+  hangupRef.current = intercom.hangup;
+
   const signalingConnected = selectedDeviceId
     ? Boolean(signalingByDevice[selectedDeviceId])
     : false;
@@ -162,6 +169,8 @@ export default function App() {
 
   const loadForDevice = useCallback(
     async (deviceId: string | null) => {
+      const generation = ++loadGeneration.current;
+      const sessionToken = getToken();
       let next: Overview;
       try {
         next = await api.overview(deviceId);
@@ -170,7 +179,7 @@ export default function App() {
           deviceId &&
           error instanceof Error &&
           "status" in error &&
-          (error as { status: number }).status === 404
+          [403, 404].includes((error as { status: number }).status)
         ) {
           selectedRef.current = null;
           localStorage.removeItem("soundguard.deviceId");
@@ -179,12 +188,14 @@ export default function App() {
           throw error;
         }
       }
+      if (generation !== loadGeneration.current || sessionToken !== getToken()) return;
       applyLoadedOverview(next);
       const now = new Date();
       const [nextAlerts, readings] = await Promise.all([
         api.alerts(next.device.id, 200),
         api.readings(new Date(now.getTime() - 30 * 60 * 1000), now, next.device.id, 120),
       ]);
+      if (generation !== loadGeneration.current || sessionToken !== getToken()) return;
       setAlerts(nextAlerts);
       const sorted = readings.readings.sort(
         (a, b) => new Date(a.recordedAt).getTime() - new Date(b.recordedAt).getTime(),
@@ -195,6 +206,8 @@ export default function App() {
     },
     [applyLoadedOverview],
   );
+
+  loadDeviceRef.current = loadForDevice;
 
   const handleSelectDevice = useCallback(
     (deviceId: string) => {
@@ -228,10 +241,16 @@ export default function App() {
     (message: LiveMessage) => {
       switch (message.type) {
         case "snapshot": {
+          globalSettingsRef.current = message.data.settings;
           const selected =
             message.data.devices.find((device) => device.id === selectedRef.current) ??
             message.data.devices[0];
           if (selected) {
+            if (selected.id !== selectedRef.current) {
+              hangupRef.current();
+              setAlerts([]); setLiveReadings([]); lastReadingRef.current = null;
+              void loadDeviceRef.current(selected.id).catch(() => undefined);
+            }
             selectedRef.current = selected.id;
             setSelectedDeviceId(selected.id);
             localStorage.setItem("soundguard.deviceId", selected.id);
@@ -252,7 +271,7 @@ export default function App() {
               ...previous,
               devices: message.data.devices,
               device: nextSelected ?? previous.device,
-              settings: message.data.settings,
+              settings: nextSelected ? effectiveSettings(message.data.settings, nextSelected) : previous.settings,
               serverTime: message.data.serverTime,
             };
             overviewRef.current = next;
@@ -268,6 +287,7 @@ export default function App() {
               ...previous,
               devices: mergeDevice(previous.devices, device),
               device: device.id === previous.device.id ? device : previous.device,
+              settings: device.id === previous.device.id ? effectiveSettings(globalSettingsRef.current ?? previous.settings, device) : previous.settings,
             };
             overviewRef.current = next;
             return next;
@@ -299,7 +319,8 @@ export default function App() {
             return next;
           });
           if (
-            !live.suspended
+            live.capturing
+            && !live.suspended
             && !(live.systemPlaying && !live.aecEnabled)
             && live.currentDb !== null
           ) {
@@ -360,9 +381,10 @@ export default function App() {
           break;
         }
         case "settings": {
+          globalSettingsRef.current = message.data;
           setOverview((previous) => {
             if (!previous) return previous;
-            const next = { ...previous, settings: message.data };
+            const next = { ...previous, settings: effectiveSettings(message.data, previous.device) };
             overviewRef.current = next;
             return next;
           });
@@ -379,6 +401,15 @@ export default function App() {
           break;
         }
         case "devices": {
+          const nextSelected = message.data.find((d) => d.id === selectedRef.current) ?? message.data[0];
+          if (nextSelected && nextSelected.id !== selectedRef.current) {
+            hangupRef.current();
+            selectedRef.current = nextSelected.id;
+            setSelectedDeviceId(nextSelected.id);
+            localStorage.setItem("soundguard.deviceId", nextSelected.id);
+            setAlerts([]); setLiveReadings([]); lastReadingRef.current = null;
+            void loadDeviceRef.current(nextSelected.id).catch(() => undefined);
+          }
           setOverview((previous) => {
             if (!previous) return previous;
             const current = message.data.find(
@@ -415,6 +446,10 @@ export default function App() {
 
   useEffect(() => {
     const handleLogout = () => {
+      ++loadGeneration.current;
+      intercom.hangup();
+      overviewRef.current = null;
+      setWsConnected(false);
       setTokenState(null);
       setOverview(null);
       setAlerts([]);
@@ -423,7 +458,7 @@ export default function App() {
     };
     window.addEventListener("soundguard:logout", handleLogout);
     return () => window.removeEventListener("soundguard:logout", handleLogout);
-  }, []);
+  }, [intercom.hangup]);
 
   useEffect(() => {
     if (!token) {
@@ -490,7 +525,7 @@ export default function App() {
       if (!id) return;
       void Promise.all([api.overview(id), api.alerts(id, 200)])
         .then(([nextOverview, nextAlerts]) => {
-          if (cancelled) return;
+          if (cancelled || id !== selectedRef.current) return;
           setOverview(nextOverview);
           overviewRef.current = nextOverview;
           setAlerts(nextAlerts);
@@ -518,6 +553,7 @@ export default function App() {
       };
       socket.onclose = () => {
         if (cancelled) return;
+        hangupRef.current();
         setWsConnected(false);
         wsRef.current = null;
         const delay = Math.min(15000, 900 * 2 ** attempts);
@@ -535,6 +571,7 @@ export default function App() {
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       wsRef.current?.close();
       wsRef.current = null;
+      setWsConnected(false);
     };
   }, [token, handleLiveMessage]);
 
@@ -547,13 +584,14 @@ export default function App() {
       void api
         .overview(id)
         .then((next) => {
+          if (id !== selectedRef.current) return;
           setOverview(next);
           overviewRef.current = next;
         })
         .catch(() => undefined);
       void api
         .alerts(id, 200)
-        .then((next) => setAlerts(next))
+        .then((next) => { if (id === selectedRef.current) setAlerts(next); })
         .catch(() => undefined);
     }, 60_000);
     return () => window.clearInterval(timer);
@@ -572,7 +610,11 @@ export default function App() {
   }, []);
 
   const handleLogout = useCallback(() => {
+    ++loadGeneration.current;
+    intercom.hangup();
     clearToken();
+    overviewRef.current = null;
+    setWsConnected(false);
     setTokenState(null);
     setOverview(null);
     setCurrentUser(null);
@@ -581,7 +623,7 @@ export default function App() {
     selectedRef.current = null;
     localStorage.removeItem("soundguard.deviceId");
     notify("已安全退出管理端", "info");
-  }, [notify]);
+  }, [notify, intercom.hangup]);
 
   const handleControl = useCallback(
     async (monitoring: boolean) => {
@@ -589,6 +631,7 @@ export default function App() {
       if (!deviceId) return;
       try {
         const result = await api.controlDevice(monitoring, deviceId);
+        if (selectedRef.current !== deviceId) return;
         setOverview((previous) => {
           if (!previous) return previous;
           const next = {

@@ -2,9 +2,7 @@ use std::{path::PathBuf, time::Duration};
 
 use chrono::Utc;
 use lettre::{
-    message::{
-        header::ContentType, Attachment, Mailbox, Message, MultiPart, SinglePart,
-    },
+    message::{header::ContentType, Attachment, Mailbox, Message, MultiPart, SinglePart},
     transport::smtp::authentication::Credentials,
     AsyncSmtpTransport, AsyncTransport, Tokio1Executor,
 };
@@ -64,28 +62,27 @@ impl Mailer {
                     SmtpTls::StartTls => {
                         AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&smtp.host)?
                     }
-                    SmtpTls::Wrapper => {
-                        AsyncSmtpTransport::<Tokio1Executor>::relay(&smtp.host)?
-                    }
+                    SmtpTls::Wrapper => AsyncSmtpTransport::<Tokio1Executor>::relay(&smtp.host)?,
                     SmtpTls::None => {
                         AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&smtp.host)
                     }
                 };
-                builder = builder.port(smtp.port).timeout(Some(Duration::from_secs(18)));
+                builder = builder
+                    .port(smtp.port)
+                    .timeout(Some(Duration::from_secs(18)));
                 if let Some(username) = &smtp.username {
                     builder = builder.credentials(Credentials::new(
                         username.clone(),
                         smtp.password.clone().unwrap_or_default(),
                     ));
                 }
-                let from = Mailbox::new(
-                    Some(smtp.from_name.clone()),
-                    smtp.from.parse()?,
-                );
+                let from = Mailbox::new(Some(smtp.from_name.clone()), smtp.from.parse()?);
                 (Some(builder.build()), Some(from))
             }
             None => {
-                warn!("SMTP is not configured; outgoing mail will be written to data/outbox instead");
+                warn!(
+                    "SMTP is not configured; outgoing mail will be written to data/outbox instead"
+                );
                 (None, None)
             }
         };
@@ -141,7 +138,9 @@ impl Mailer {
         }
 
         let Some(transport) = &self.transport else {
-            return self.write_outbox(&parsed, subject, text, &attachments).await;
+            return self
+                .write_outbox(&parsed, subject, text, &attachments)
+                .await;
         };
         let Some(from) = &self.from else {
             return MailResult::failed("发件人地址未配置");
@@ -164,8 +163,7 @@ impl Mailer {
                 .parse::<ContentType>()
                 .unwrap_or(ContentType::parse("application/octet-stream").unwrap());
             mixed = mixed.singlepart(
-                Attachment::new(attachment.filename)
-                    .body(attachment.bytes, content_type),
+                Attachment::new(attachment.filename).body(attachment.bytes, content_type),
             );
         }
 
@@ -244,11 +242,9 @@ impl Mailer {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    let _ = tokio::fs::set_permissions(
-                        &path,
-                        std::fs::Permissions::from_mode(0o600),
-                    )
-                    .await;
+                    let _ =
+                        tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                            .await;
                 }
                 info!("SMTP not configured; email preview written to data/outbox");
                 MailResult::dry_run()

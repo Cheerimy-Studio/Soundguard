@@ -3,14 +3,14 @@
 FROM node:22-bookworm AS web
 WORKDIR /src
 COPY web/package.json web/package-lock.json* ./
-RUN npm install
+RUN npm ci
 COPY web/ ./
 RUN npm run build
 
 FROM rust:1-bookworm AS server
 WORKDIR /src
 COPY server/ ./server/
-RUN cargo build --release --manifest-path server/Cargo.toml
+RUN cargo build --locked --release --manifest-path server/Cargo.toml
 
 FROM debian:bookworm-slim
 RUN apt-get update \

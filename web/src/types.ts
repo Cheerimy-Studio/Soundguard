@@ -198,7 +198,7 @@ export type LiveMessage =
 
 export interface LiveData {
   deviceId: string;
-  currentDb: number;
+  currentDb: number | null;
   averageDb: number | null;
   peakDb: number | null;
   capturing: boolean;

@@ -9,7 +9,10 @@ use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{config::Config, models::{User, UserRole}};
+use crate::{
+    config::Config,
+    models::{User, UserRole},
+};
 
 pub fn hash_token(token: &str) -> String {
     let digest = Sha256::digest(token.as_bytes());
@@ -153,12 +156,12 @@ pub fn verify_token(config: &Config, token: &str) -> Option<Claims> {
 pub fn secure_eq(left: &str, right: &str) -> bool {
     let left = left.as_bytes();
     let right = right.as_bytes();
-    let mut diff = (left.len() ^ right.len()) as u8;
+    let mut diff = left.len() ^ right.len();
     let max = left.len().max(right.len());
     for index in 0..max {
         let a = left.get(index).copied().unwrap_or(0);
         let b = right.get(index).copied().unwrap_or(0);
-        diff |= a ^ b;
+        diff |= usize::from(a ^ b);
     }
     diff == 0
 }
@@ -172,6 +175,12 @@ mod tests {
         assert!(secure_eq("2468", "2468"));
         assert!(!secure_eq("2468", "2469"));
         assert!(!secure_eq("2468", "24680"));
+    }
+
+    #[test]
+    fn secure_compare_rejects_zero_padded_lengths_over_255() {
+        assert!(!secure_eq("", &"\0".repeat(256)));
+        assert!(!secure_eq("pin", &format!("pin{}", "\0".repeat(256))));
     }
 
     #[test]

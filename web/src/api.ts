@@ -60,7 +60,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   }
   let response: Response;
   try {
-    response = await fetch(`/api${path}`, { ...init, headers: mergedHeaders });
+    response = await fetch(`/api${path}`, { ...init, headers: mergedHeaders, signal: init.signal ?? AbortSignal.timeout(20_000) });
   } catch {
     throw new ApiError(0, "无法连接到服务器，请检查网络或服务状态");
   }
@@ -73,7 +73,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     } catch {
       // Keep the status-based message when the response is not JSON.
     }
-    if (response.status === 401 && auth) {
+    if (response.status === 401 && auth && mergedHeaders.get("Authorization") === `Bearer ${getToken()}`) {
       clearToken();
       window.dispatchEvent(new Event("soundguard:logout"));
     }
@@ -92,12 +92,13 @@ async function requestBlob(path: string): Promise<Blob> {
   try {
     response = await fetch(`/api${path}`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
+      signal: AbortSignal.timeout(30_000),
     });
   } catch {
     throw new ApiError(0, "无法连接到服务器");
   }
   if (!response.ok) {
-    if (response.status === 401) {
+    if (response.status === 401 && token === getToken()) {
       clearToken();
       window.dispatchEvent(new Event("soundguard:logout"));
     }
@@ -306,8 +307,10 @@ export const api = {
     return request<CallRecord[]>(`/calls?${params.toString()}`);
   },
 
-  saveCallRecord(payload: CreateCallPayload): Promise<CallRecord> {
+  saveCallRecord(payload: CreateCallPayload, sessionToken = getToken()): Promise<CallRecord> {
     return request<CallRecord>("/calls", {
+      auth: false,
+      headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {},
       method: "POST",
       body: JSON.stringify(payload),
     });

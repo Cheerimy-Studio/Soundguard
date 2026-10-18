@@ -46,13 +46,7 @@ pub fn spawn_offline_monitor(state: AppState) {
                 let created = state
                     .store
                     .mutate(|state| {
-                        let Some(target) = state
-                            .devices
-                            .iter_mut()
-                            .find(|item| item.id == device.id)
-                        else {
-                            return None;
-                        };
+                        let target = state.devices.iter_mut().find(|item| item.id == device.id)?;
                         if target.expected_offline
                             || target.offline_alert_active
                             || (!target.monitoring && !target.desired_monitoring)
@@ -113,10 +107,9 @@ pub fn spawn_offline_monitor(state: AppState) {
                         crate::models::effective_settings(&latest.settings, updated);
                     state.hub.broadcast_event(
                         "device",
-                        serde_json::to_value(updated.view(
-                            Utc::now(),
-                            updated_settings.offline_timeout_secs,
-                        ))
+                        serde_json::to_value(
+                            updated.view(Utc::now(), updated_settings.offline_timeout_secs),
+                        )
                         .unwrap_or_default(),
                     );
                 }
@@ -135,7 +128,11 @@ async fn send_offline_email(
     let subject = format!("【声垣告警】{} 已离线", device.name);
     let last_seen = device
         .last_seen
-        .map(|time| time.with_timezone(&Local).format("%Y-%m-%d %H:%M:%S").to_string())
+        .map(|time| {
+            time.with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string()
+        })
         .unwrap_or_else(|| "未知".to_string());
     let text = format!(
         "声垣 SoundGuard 设备离线告警\n\n设备：{}\n最后心跳：{}\n判定：设备超过 {} 秒未上报，可能为异常关闭、断电或断网。\n\n请登录管理端核查现场情况。\n",
@@ -173,6 +170,9 @@ pub fn spawn_maintenance(state: AppState) {
         loop {
             ticker.tick().await;
             let settings = state.store.settings().await;
+            if let Err(error) = state.store.cleanup_media(settings.retention_days).await {
+                error!("Media retention cleanup failed: {error}");
+            }
             match state.store.cleanup_readings(settings.retention_days).await {
                 Ok(removed) if removed > 0 => {
                     info!("Removed {removed} expired telemetry files");

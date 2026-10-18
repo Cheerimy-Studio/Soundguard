@@ -17,26 +17,26 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
 use tower_http::{
     compression::CompressionLayer,
     cors::{Any, CorsLayer},
     services::{ServeDir, ServeFile},
     trace::TraceLayer,
 };
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::{
     auth::{
-        hash_password, hash_token, issue_user_token, new_device_id, new_device_token,
-        new_user_id, secure_eq, validate_password, verify_password, verify_token, CurrentUser,
+        hash_password, hash_token, issue_user_token, new_device_id, new_device_token, new_user_id,
+        secure_eq, validate_password, verify_password, verify_token, CurrentUser,
     },
     error::AppError,
     models::{
-        round1, Alert, AlertKind, CallRecord, ControlRequest, CreateCallRequest, CreateDeviceRequest,
-        CreateDeviceResponse, Device, DeviceControlResponse, DeviceListResponse, DeviceTokenResponse,
-        DeviceView, HeartbeatRequest, HeartbeatResponse, LoginRequest, LoginResponse,
-        ChangePasswordRequest, CreateUserRequest, DeviceSettingsUpdate, LiveRequest,
+        round1, Alert, AlertKind, CallRecord, ChangePasswordRequest, ControlRequest,
+        CreateCallRequest, CreateDeviceRequest, CreateDeviceResponse, CreateUserRequest, Device,
+        DeviceControlResponse, DeviceListResponse, DeviceSettingsUpdate, DeviceTokenResponse,
+        DeviceView, HeartbeatRequest, HeartbeatResponse, LiveRequest, LoginRequest, LoginResponse,
         NotificationUpdate, OverviewResponse, Reading, ReportResult, Settings, SettingsResponse,
         Stats, StopIntentRequest, StopIntentResponse, TelemetryRequest, TelemetryResponse,
         UpdateDeviceRequest, UpdateUserRequest, User, UserView, VerifyPinRequest,
@@ -101,10 +101,7 @@ impl FromRequestParts<AppState> for Admin {
             .user(&claims.sub)
             .await
             .ok_or_else(AppError::unauthorized)?;
-        if user.disabled
-            || user.token_version != claims.ver
-            || user.role.as_str() != claims.role
-        {
+        if user.disabled || user.token_version != claims.ver || user.role.as_str() != claims.role {
             return Err(AppError::unauthorized());
         }
         Ok(Admin {
@@ -113,10 +110,34 @@ impl FromRequestParts<AppState> for Admin {
     }
 }
 
+struct DeviceAuth;
+impl FromRequestParts<AppState> for DeviceAuth {
+    type Rejection = AppError;
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let token = parts
+            .headers
+            .get("x-device-token")
+            .and_then(|v| v.to_str().ok())
+            .filter(|v| !v.is_empty() && v.len() <= 512)
+            .ok_or_else(AppError::unauthorized)?;
+        let hash = hash_token(token);
+        if !state.store.authenticates_token(&hash).await {
+            return Err(AppError::unauthorized());
+        }
+        Ok(Self)
+    }
+}
+
 pub fn build_router(state: AppState) -> Router {
     let api = Router::new()
         .route("/health", get(health))
-        .route("/auth/login", post(login))
+        .route(
+            "/auth/login",
+            post(login).layer(DefaultBodyLimit::max(4096)),
+        )
         .route("/auth/me", get(me))
         .route("/auth/password", post(change_password))
         .route("/users", get(list_users).post(create_user))
@@ -137,11 +158,19 @@ pub fn build_router(state: AppState) -> Router {
         .route("/device/control", post(control_device))
         .route("/reports/send", post(send_report))
         .route("/test/alert", post(test_alert))
-        .route("/calls", get(list_calls).post(create_call))
+        .route(
+            "/calls",
+            get(list_calls)
+                .post(create_call)
+                .layer(DefaultBodyLimit::max(17 * 1024 * 1024)),
+        )
         .route("/calls/{id}/audio", get(get_call_audio))
         .route("/ws", get(admin_ws))
         .route("/device/heartbeat", post(device_heartbeat))
-        .route("/device/telemetry", post(device_telemetry))
+        .route(
+            "/device/telemetry",
+            post(device_telemetry).layer(DefaultBodyLimit::max(9 * 1024 * 1024)),
+        )
         .route("/device/live", post(device_live))
         .route("/device/stop-intent", post(device_stop_intent))
         .route("/device/local-stop", post(device_local_stop))
@@ -150,6 +179,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/device/calls/{id}/audio", get(device_call_audio))
         .route("/device/ws", get(device_ws))
         .fallback(api_not_found)
+        .layer(axum::middleware::from_fn(api_response_headers))
         .with_state(state.clone());
 
     let index = state.config.web_index();
@@ -157,7 +187,12 @@ pub fn build_router(state: AppState) -> Router {
         ServeDir::new(&state.config.web_dist).not_found_service(ServeFile::new(index));
 
     let cors = if state.config.cors_origins.is_empty() {
-        CorsLayer::permissive()
+        CorsLayer::new()
+            .allow_origin(HeaderValue::from_static(
+                "https://appassets.androidplatform.net",
+            ))
+            .allow_methods(Any)
+            .allow_headers(Any)
     } else {
         let origins: Vec<HeaderValue> = state
             .config
@@ -175,9 +210,24 @@ pub fn build_router(state: AppState) -> Router {
         .nest("/api", api)
         .fallback_service(static_files)
         .layer(CompressionLayer::new())
-        .layer(DefaultBodyLimit::max(20 * 1024 * 1024))
+        .layer(DefaultBodyLimit::max(256 * 1024))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
+}
+
+async fn api_response_headers(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let mut response = next.run(request).await;
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response.headers_mut().insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    response
 }
 
 async fn api_not_found() -> AppError {
@@ -198,47 +248,74 @@ async fn login(
     State(state): State<AppState>,
     Json(request): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, AppError> {
+    if request.username.len() > 128 || request.password.len() > 512 {
+        return Err(AppError::bad_request("用户名或密码过长"));
+    }
+    let username = request.username.trim();
+    let user = state.store.user_by_username(username).await;
+    // Unrecognized names share one bucket, so invented names cannot fill the
+    // lockout table and deny service to real accounts.
+    let account_key = user
+        .as_ref()
+        .map(|u| u.id.clone())
+        .unwrap_or_else(|| "unknown".into());
+    let password_permit = state
+        .password_jobs
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| AppError::new(StatusCode::TOO_MANY_REQUESTS, "登录繁忙，请稍后再试"))?;
     {
-        let mut guard = state
-            .login_guard
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if guard
-            .locked_until
-            .is_some_and(|until| until > std::time::Instant::now())
-        {
+        let mut guard = state.login_guard.lock().unwrap_or_else(|p| p.into_inner());
+        let now = std::time::Instant::now();
+        guard.accounts.retain(|_, entry| {
+            entry
+                .touched
+                .is_some_and(|t| now.duration_since(t).as_secs() < 600)
+        });
+        if guard.accounts.len() >= 4096 && !guard.accounts.contains_key(&account_key) {
             return Err(AppError::new(
                 StatusCode::TOO_MANY_REQUESTS,
-                "登录尝试次数过多，请 5 分钟后再试",
+                "登录繁忙，请稍后再试",
             ));
         }
-        if guard.locked_until.is_some() {
-            guard.locked_until = None;
-            guard.failures = 0;
+        let entry = guard.accounts.entry(account_key.clone()).or_default();
+        if entry.locked_until.is_some_and(|until| until > now) {
+            return Err(AppError::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "此账号登录错误过多，请 5 分钟后再试",
+            ));
         }
+        if entry.locked_until.take().is_some() {
+            entry.failures = 0;
+        }
+        entry.touched = Some(now);
     }
 
-    let username = request.username.trim();
-    let user = if username.is_empty() {
-        None
-    } else {
-        state.store.user_by_username(username).await
-    };
-    let valid = user
+    let hash = user
         .as_ref()
-        .filter(|user| !user.disabled)
-        .is_some_and(|user| verify_password(&user.password_hash, &request.password));
+        .filter(|u| !u.disabled)
+        .map(|u| u.password_hash.clone())
+        .unwrap_or_else(|| state.dummy_password_hash.as_ref().clone());
+    let password = request.password.clone();
+    let valid_hash = tokio::task::spawn_blocking(move || {
+        let _permit = password_permit;
+        verify_password(&hash, &password)
+    })
+    .await
+    .map_err(|_| AppError::internal("密码验证失败"))?;
+    let valid = valid_hash && user.as_ref().is_some_and(|u| !u.disabled);
     if !valid {
         let locked = {
             let mut guard = state
                 .login_guard
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            guard.failures = guard.failures.saturating_add(1);
-            if guard.failures >= 5 {
-                guard.failures = 0;
-                guard.locked_until =
-                    Some(std::time::Instant::now() + StdDuration::from_secs(300));
+            let entry = guard.accounts.entry(account_key.clone()).or_default();
+            entry.failures = entry.failures.saturating_add(1);
+            entry.touched = Some(std::time::Instant::now());
+            if entry.failures >= 5 {
+                entry.failures = 0;
+                entry.locked_until = Some(std::time::Instant::now() + StdDuration::from_secs(300));
                 true
             } else {
                 false
@@ -249,7 +326,7 @@ async fn login(
         if locked {
             return Err(AppError::new(
                 StatusCode::TOO_MANY_REQUESTS,
-                "登录尝试次数过多，请 5 分钟后再试",
+                "此账号登录错误过多，请 5 分钟后再试",
             ));
         }
         return Err(AppError::unauthorized());
@@ -259,8 +336,7 @@ async fn login(
             .login_guard
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        guard.failures = 0;
-        guard.locked_until = None;
+        guard.accounts.remove(&account_key);
     }
     let mut user = user.expect("validated user");
     let now = Utc::now();
@@ -268,11 +344,18 @@ async fn login(
         .store
         .mutate(|snapshot| {
             if let Some(target) = snapshot.users.iter_mut().find(|item| item.id == user.id) {
+                if target.disabled || target.token_version != user.token_version {
+                    return false;
+                }
                 target.last_login_at = Some(now);
                 user = target.clone();
+                return true;
             }
+            false
         })
-        .await?;
+        .await?
+        .then_some(())
+        .ok_or_else(AppError::unauthorized)?;
     // The Android app keeps its session locally and needs a longer-lived token
     // so it can stay signed in across restarts.
     let ttl_hours = if request.remember {
@@ -281,7 +364,11 @@ async fn login(
         state.config.jwt_ttl_hours
     };
     let (token, expires_at) = issue_user_token(&state.config, &user, ttl_hours)?;
-    info!("User session created: {} ({})", user.username, user.role.as_str());
+    info!(
+        "User session created: {} ({})",
+        user.username,
+        user.role.as_str()
+    );
     Ok(Json(LoginResponse {
         token,
         expires_at,
@@ -298,6 +385,43 @@ async fn me(admin: Admin, State(state): State<AppState>) -> Result<Json<UserView
     Ok(Json(user.view()))
 }
 
+async fn password_hash_job(state: &AppState, password: &str) -> Result<String, AppError> {
+    let permit = state
+        .password_jobs
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| AppError::new(StatusCode::TOO_MANY_REQUESTS, "密码处理繁忙，请稍后重试"))?;
+    let password = password.to_string();
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        hash_password(&password)
+    })
+    .await
+    .map_err(|_| AppError::internal("密码处理失败"))?
+    .map_err(AppError::from)
+}
+
+async fn password_verify_job(
+    state: &AppState,
+    hash: String,
+    password: String,
+) -> Result<bool, AppError> {
+    if password.len() > 512 {
+        return Ok(false);
+    }
+    let permit = state
+        .password_jobs
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| AppError::new(StatusCode::TOO_MANY_REQUESTS, "密码处理繁忙，请稍后重试"))?;
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        verify_password(&hash, &password)
+    })
+    .await
+    .map_err(|_| AppError::internal("密码处理失败"))
+}
+
 async fn change_password(
     admin: Admin,
     State(state): State<AppState>,
@@ -309,10 +433,10 @@ async fn change_password(
         .user(&admin.user.id)
         .await
         .ok_or_else(AppError::unauthorized)?;
-    if !verify_password(&user.password_hash, &request.current_password) {
+    if !password_verify_job(&state, user.password_hash.clone(), request.current_password).await? {
         return Err(AppError::bad_request("当前密码不正确"));
     }
-    let hash = hash_password(&request.new_password)?;
+    let hash = password_hash_job(&state, &request.new_password).await?;
     state
         .store
         .mutate(|snapshot| {
@@ -337,7 +461,8 @@ fn validate_email(raw: &str) -> Result<String, AppError> {
     let Some((local, domain)) = value.split_once('@') else {
         return Err(AppError::bad_request("接收邮箱格式不正确"));
     };
-    if local.is_empty()
+    if value.parse::<lettre::Address>().is_err()
+        || local.is_empty()
         || domain.is_empty()
         || !domain.contains('.')
         || domain.starts_with('.')
@@ -365,7 +490,10 @@ fn validate_username(username: &str) -> Result<String, AppError> {
     Ok(value.to_string())
 }
 
-async fn list_users(admin: Admin, State(state): State<AppState>) -> Result<Json<Vec<UserView>>, AppError> {
+async fn list_users(
+    admin: Admin,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<UserView>>, AppError> {
     admin.require_super()?;
     let snapshot = state.store.snapshot().await;
     Ok(Json(snapshot.users.iter().map(User::view).collect()))
@@ -380,7 +508,7 @@ async fn create_user(
     let username = validate_username(&request.username)?;
     let email = validate_email(&request.email)?;
     validate_password(&request.password).map_err(AppError::bad_request)?;
-    let password_hash = hash_password(&request.password)?;
+    let password_hash = password_hash_job(&state, &request.password).await?;
     let device_ids = if request.role.is_super() {
         Vec::new()
     } else {
@@ -445,7 +573,11 @@ async fn update_user(
         .iter()
         .filter(|user| user.role.is_super() && !user.disabled)
         .count();
-    if target.role.is_super() && active_supers <= 1 && (!next_role.is_super() || next_disabled) {
+    if target.role.is_super()
+        && !target.disabled
+        && active_supers <= 1
+        && (!next_role.is_super() || next_disabled)
+    {
         return Err(AppError::bad_request("必须保留至少一个可用的超级管理员"));
     }
     if target.id == admin.user.id && next_disabled {
@@ -458,7 +590,7 @@ async fn update_user(
     let new_hash = match request.password {
         Some(value) => {
             validate_password(&value).map_err(AppError::bad_request)?;
-            Some(hash_password(&value)?)
+            Some(password_hash_job(&state, &value).await?)
         }
         None => None,
     };
@@ -495,6 +627,20 @@ async fn update_user(
                     return Err(AppError::new(StatusCode::CONFLICT, "用户名已存在"));
                 }
             }
+            let active_supers = snapshot
+                .users
+                .iter()
+                .filter(|u| u.role.is_super() && !u.disabled)
+                .count();
+            if snapshot
+                .users
+                .iter()
+                .any(|u| u.id == id && u.role.is_super() && !u.disabled)
+                && active_supers <= 1
+                && (!next_role.is_super() || next_disabled)
+            {
+                return Err(AppError::bad_request("必须保留至少一个可用的超级管理员"));
+            }
             let user = snapshot
                 .users
                 .iter_mut()
@@ -506,13 +652,14 @@ async fn update_user(
             if let Some(email) = email {
                 user.email = email;
             }
+            let assignments_changed = user.device_ids != device_ids;
             user.role = next_role;
             user.device_ids = device_ids;
             user.disabled = next_disabled;
             if let Some(hash) = new_hash {
                 user.password_hash = hash;
                 user.token_version = user.token_version.saturating_add(1);
-            } else if role_or_status_changed {
+            } else if role_or_status_changed || assignments_changed {
                 user.token_version = user.token_version.saturating_add(1);
             }
             Ok(user.view())
@@ -544,7 +691,7 @@ async fn delete_user(
                 .iter()
                 .filter(|user| user.role.is_super() && !user.disabled)
                 .count();
-            if target.role.is_super() && active_supers <= 1 {
+            if target.role.is_super() && !target.disabled && active_supers <= 1 {
                 return Err(AppError::bad_request("必须保留至少一个可用的超级管理员"));
             }
             snapshot.users.retain(|user| user.id != id);
@@ -564,7 +711,9 @@ async fn update_notifications(
     settings.notification_enabled = request.enabled;
     settings.notification_title = request.title;
     settings.notification_content = request.content;
-    settings.validate_and_normalize().map_err(AppError::bad_request)?;
+    settings
+        .validate_and_normalize()
+        .map_err(AppError::bad_request)?;
     let saved = state
         .store
         .mutate(|snapshot| {
@@ -592,8 +741,8 @@ fn device_views(
         .iter()
         .filter(|device| user.can_access_device(&device.id))
         .map(|device| {
-            let offline = crate::models::effective_settings(&state.settings, device)
-                .offline_timeout_secs;
+            let offline =
+                crate::models::effective_settings(&state.settings, device).offline_timeout_secs;
             device.view(now, offline)
         })
         .collect()
@@ -647,9 +796,7 @@ async fn authenticate_device(
         .device(device_id)
         .await
         .ok_or_else(AppError::unauthorized)?;
-    if device.token_hash.is_empty()
-        || !secure_eq(&device.token_hash, &hash_token(token))
-    {
+    if device.token_hash.is_empty() || !secure_eq(&device.token_hash, &hash_token(token)) {
         return Err(AppError::unauthorized());
     }
     Ok(device)
@@ -668,9 +815,7 @@ async fn authenticate_device_query(
         .device(device_id)
         .await
         .ok_or_else(AppError::unauthorized)?;
-    if device.token_hash.is_empty()
-        || !secure_eq(&device.token_hash, &hash_token(token))
-    {
+    if device.token_hash.is_empty() || !secure_eq(&device.token_hash, &hash_token(token)) {
         return Err(AppError::unauthorized());
     }
     Ok(device)
@@ -739,6 +884,10 @@ async fn create_device(
     let device = state
         .store
         .mutate(|state| {
+            let name = validate_device_name(&state.devices, &name, None)?;
+            if state.devices.iter().any(|d| d.id == device_id) {
+                return Err(AppError::new(StatusCode::CONFLICT, "设备编号已存在"));
+            }
             let device = Device::new(device_id, name, token_hash);
             state.devices.push(device.clone());
             if !admin.is_super() {
@@ -748,9 +897,9 @@ async fn create_device(
                     user.device_ids.dedup();
                 }
             }
-            device
+            Ok(device)
         })
-        .await?;
+        .await??;
     let device_settings = crate::models::effective_settings(&snapshot.settings, &device);
     let response = CreateDeviceResponse {
         device: device.view(created_at, device_settings.offline_timeout_secs),
@@ -759,7 +908,16 @@ async fn create_device(
     let latest = state.store.snapshot().await;
     state.hub.broadcast_event(
         "devices",
-        serde_json::to_value(device_views(&latest, Utc::now(), &admin.user)).unwrap_or_default(),
+        serde_json::to_value(device_views(
+            &latest,
+            Utc::now(),
+            &CurrentUser {
+                id: String::new(),
+                role: crate::models::UserRole::SuperAdmin,
+                device_ids: vec![],
+            },
+        ))
+        .unwrap_or_default(),
     );
     Ok(Json(response))
 }
@@ -780,17 +938,20 @@ async fn update_device(
     let updated = state
         .store
         .mutate(|state| {
+            let name = validate_device_name(&state.devices, &name, Some(&id))?;
             let target = state.devices.iter_mut().find(|device| device.id == id);
-            target.map(|device| {
+            Ok::<_, AppError>(target.map(|device| {
                 device.name = name;
                 let offline =
                     crate::models::effective_settings(&state.settings, device).offline_timeout_secs;
                 device.view(now, offline)
-            })
+            }))
         })
-        .await?
+        .await??
         .ok_or_else(|| AppError::not_found("设备不存在"))?;
-    state.hub.broadcast_event("device", serde_json::to_value(&updated).unwrap_or_default());
+    state
+        .hub
+        .broadcast_event("device", serde_json::to_value(&updated).unwrap_or_default());
     Ok(Json(updated))
 }
 
@@ -802,20 +963,24 @@ async fn update_device_settings(
 ) -> Result<Json<DeviceView>, AppError> {
     admin.ensure_device_access(&id)?;
     let mut settings = request.into_settings();
-    settings.validate_and_normalize().map_err(AppError::bad_request)?;
+    settings
+        .validate_and_normalize()
+        .map_err(AppError::bad_request)?;
     let now = Utc::now();
     let updated = state
         .store
         .mutate(|snapshot| {
             let target = snapshot.devices.iter_mut().find(|device| device.id == id)?;
             target.settings = settings;
-            let offline = crate::models::effective_settings(&snapshot.settings, target)
-                .offline_timeout_secs;
+            let offline =
+                crate::models::effective_settings(&snapshot.settings, target).offline_timeout_secs;
             Some(target.view(now, offline))
         })
         .await?
         .ok_or_else(|| AppError::not_found("设备不存在"))?;
-    state.hub.broadcast_event("device", serde_json::to_value(&updated).unwrap_or_default());
+    state
+        .hub
+        .broadcast_event("device", serde_json::to_value(&updated).unwrap_or_default());
     Ok(Json(updated))
 }
 
@@ -845,7 +1010,16 @@ async fn delete_device(
     let latest = state.store.snapshot().await;
     state.hub.broadcast_event(
         "devices",
-        serde_json::to_value(device_views(&latest, Utc::now(), &admin.user)).unwrap_or_default(),
+        serde_json::to_value(device_views(
+            &latest,
+            Utc::now(),
+            &CurrentUser {
+                id: String::new(),
+                role: crate::models::UserRole::SuperAdmin,
+                device_ids: vec![],
+            },
+        ))
+        .unwrap_or_default(),
     );
     Ok(Json(json!({ "ok": true })))
 }
@@ -970,8 +1144,9 @@ fn parse_time(raw: &str) -> Option<DateTime<Utc>> {
 fn parse_range(query: &RangeQuery) -> Result<(DateTime<Utc>, DateTime<Utc>), AppError> {
     let now = Utc::now();
     let to = match &query.to {
-        Some(raw) => parse_time(raw)
-            .ok_or_else(|| AppError::bad_request("to 时间格式无效，应为 RFC3339"))?,
+        Some(raw) => {
+            parse_time(raw).ok_or_else(|| AppError::bad_request("to 时间格式无效，应为 RFC3339"))?
+        }
         None => now,
     };
     let from = match &query.from {
@@ -1153,10 +1328,9 @@ async fn update_settings(
             settings
         })
         .await?;
-    state.hub.broadcast_event(
-        "settings",
-        serde_json::to_value(&saved).unwrap_or_default(),
-    );
+    state
+        .hub
+        .broadcast_event("settings", serde_json::to_value(&saved).unwrap_or_default());
     Ok(Json(SettingsResponse {
         settings: saved,
         smtp_configured: state.mailer.configured(),
@@ -1182,13 +1356,10 @@ async fn control_device(
     let snapshot = state
         .store
         .mutate(|state| {
-            let Some(device) = state
+            let device = state
                 .devices
                 .iter_mut()
-                .find(|device| device.id == request.device_id)
-            else {
-                return None;
-            };
+                .find(|device| device.id == request.device_id)?;
             device.desired_monitoring = request.monitoring;
             let mut alert = Alert::new(
                 device.id.clone(),
@@ -1243,13 +1414,19 @@ async fn control_device(
         .ok_or_else(|| AppError::not_found("设备不存在"))?;
     let settings = crate::models::effective_settings(&snapshot.settings, device);
     let view = device.view(now, settings.offline_timeout_secs);
-    state.hub.broadcast_event(
-        "device",
-        serde_json::to_value(&view).unwrap_or_default(),
-    );
+    state
+        .hub
+        .broadcast_event("device", serde_json::to_value(&view).unwrap_or_default());
     Ok(Json(DeviceControlResponse {
         device: view,
-        settings,
+        settings: if admin.is_super() {
+            settings
+        } else {
+            let mut public = settings;
+            public.alert_recipients.clear();
+            public.report_recipients.clear();
+            public
+        },
     }))
 }
 
@@ -1306,11 +1483,8 @@ async fn test_alert(
         ),
     );
     alert.db = Some(db);
-    let recipients = crate::models::notification_recipients(
-        &snapshot,
-        &device.id,
-        &settings.alert_recipients,
-    );
+    let recipients =
+        crate::models::notification_recipients(&snapshot, &device.id, &settings.alert_recipients);
     alert.email_status = initial_email_status(&recipients);
     state.store.push_alert(alert.clone()).await?;
     state.hub.broadcast_alert(&alert);
@@ -1349,10 +1523,7 @@ fn spawn_noise_email(
     } else {
         "本次告警未附带录音。".to_string()
     };
-    let subject = format!(
-        "【声垣告警】{} 分贝超限 · {:.1} dB",
-        device.name, db
-    );
+    let subject = format!("【声垣告警】{} 分贝超限 · {:.1} dB", device.name, db);
     let text = format!(
         "声垣 SoundGuard 分贝超限告警\n\n设备：{}\n时间：{}\n平均分贝：{:.1} dB\n阈值：{:.1} dB\n{}\n\n管理端：{}\n",
         device.name,
@@ -1398,20 +1569,14 @@ async fn record_pin_failure(
     action: &str,
 ) -> Result<(bool, u32), AppError> {
     let snapshot = state.store.snapshot().await;
-    let recipients = crate::models::notification_recipients(
-        &snapshot,
-        &device.id,
-        &settings.alert_recipients,
-    );
+    let recipients =
+        crate::models::notification_recipients(&snapshot, &device.id, &settings.alert_recipients);
     let email_status = initial_email_status(&recipients);
     let action_label = action.to_string();
     let outcome = state
         .store
         .mutate(|state| {
-            let target = state
-                .devices
-                .iter_mut()
-                .find(|item| item.id == device.id)?;
+            let target = state.devices.iter_mut().find(|item| item.id == device.id)?;
             target.stop_failures = target.stop_failures.saturating_add(1);
             let locked = target.stop_failures >= 5;
             if locked {
@@ -1503,6 +1668,7 @@ async fn reset_pin_failures(state: &AppState, device_id: &str) -> Result<(), App
 }
 
 async fn device_verify_pin(
+    _credential: DeviceAuth,
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(request): Json<VerifyPinRequest>,
@@ -1547,6 +1713,7 @@ async fn device_status(
 }
 
 async fn device_live(
+    _credential: DeviceAuth,
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(request): Json<LiveRequest>,
@@ -1566,23 +1733,14 @@ async fn device_live(
         .unwrap_or_else(Utc::now);
     let view = state
         .store
-        .update_live(
-            &request.device_id,
-            round1(request.current_db),
-            request.average_db.map(round1),
-            request.peak_db.map(round1),
-            request.capturing,
-            request.suspended,
-            request.system_playing,
-            request.aec_enabled,
-        )
+        .update_live(&request)
         .await
         .ok_or_else(|| AppError::not_found("设备不存在"))?;
     state.hub.broadcast_event(
         "live",
         json!({
             "deviceId": request.device_id,
-            "currentDb": round1(request.current_db),
+            "currentDb": view.current_db,
             "averageDb": request.average_db.map(round1),
             "peakDb": request.peak_db.map(round1),
             "capturing": request.capturing,
@@ -1597,6 +1755,7 @@ async fn device_live(
 }
 
 async fn device_heartbeat(
+    _credential: DeviceAuth,
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(request): Json<HeartbeatRequest>,
@@ -1649,10 +1808,9 @@ async fn device_heartbeat(
         state.hub.broadcast_alert(&alert);
     }
     let view = device.view(now, settings.offline_timeout_secs);
-    state.hub.broadcast_event(
-        "device",
-        serde_json::to_value(&view).unwrap_or_default(),
-    );
+    state
+        .hub
+        .broadcast_event("device", serde_json::to_value(&view).unwrap_or_default());
     Ok(Json(HeartbeatResponse {
         desired_monitoring: device.desired_monitoring,
         threshold_db: settings.threshold_db,
@@ -1675,19 +1833,28 @@ fn valid_db(value: f64) -> bool {
 }
 
 fn looks_like_wav(bytes: &[u8]) -> bool {
-    bytes.len() > 44 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE"
+    crate::wav::duration(bytes).is_some()
 }
 
 async fn device_telemetry(
+    _credential: DeviceAuth,
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(request): Json<TelemetryRequest>,
 ) -> Result<Json<TelemetryResponse>, AppError> {
     let device = authenticate_device(&state, &headers, &request.device_id).await?;
-    if !valid_db(request.avg_db) || !valid_db(request.peak_db) {
+    if !(1..=300).contains(&request.duration_secs)
+        || request.sample_count == 0
+        || !valid_db(request.avg_db)
+        || !valid_db(request.peak_db)
+    {
         return Err(AppError::bad_request("分贝数据超出有效范围"));
     }
-    if request.min_db.is_some_and(|value| !valid_db(value)) {
+    if request.peak_db < request.avg_db
+        || request
+            .min_db
+            .is_some_and(|value| !valid_db(value) || value > request.avg_db)
+    {
         return Err(AppError::bad_request("最低分贝数据无效"));
     }
 
@@ -1700,13 +1867,15 @@ async fn device_telemetry(
     let over_threshold = avg_db >= settings.threshold_db;
     let recorded_at = request
         .recorded_at
-        .filter(|time| now.signed_duration_since(*time).num_seconds().abs() <= 600)
+        .filter(|time| {
+            *time <= now + Duration::seconds(30)
+                && *time >= now - Duration::days(settings.retention_days as i64)
+        })
         .unwrap_or(now);
     let cooldown_elapsed = device
         .last_high_alert_at
         .map(|last| {
-            now.signed_duration_since(last).num_seconds()
-                >= settings.alert_cooldown_secs as i64
+            now.signed_duration_since(last).num_seconds() >= settings.alert_cooldown_secs as i64
         })
         .unwrap_or(true);
 
@@ -1717,16 +1886,16 @@ async fn device_telemetry(
         && settings.auto_record_evidence
         && request.audio_base64.is_some()
     {
-        match base64::engine::general_purpose::STANDARD.decode(
-            request.audio_base64.as_deref().unwrap_or_default(),
-        ) {
+        match base64::engine::general_purpose::STANDARD
+            .decode(request.audio_base64.as_deref().unwrap_or_default())
+        {
             Ok(bytes) if bytes.len() <= 6 * 1024 * 1024 && looks_like_wav(&bytes) => {
                 match state.store.save_evidence(&bytes, "alert").await {
                     Ok(filename) => {
                         evidence_file = Some(filename);
                         evidence_bytes = bytes;
                     }
-                    Err(error) => warn!("Could not store evidence audio: {error}"),
+                    Err(error) => return Err(error.into()),
                 }
             }
             Ok(_) => warn!("Ignored invalid or oversized evidence audio"),
@@ -1742,11 +1911,9 @@ async fn device_telemetry(
         min_db,
         over_threshold,
         duration_secs: request.duration_secs.clamp(1, 300),
-        sample_count: request.sample_count.min(1_000_000),
+        sample_count: request.sample_count.min(60_000_000),
     };
-    if let Err(error) = state.store.append_reading(&reading).await {
-        error!("Could not persist reading: {error}");
-    }
+    let new_reading = state.store.append_reading(&reading).await?;
 
     let recipients = crate::models::notification_recipients(
         &snapshot,
@@ -1754,7 +1921,9 @@ async fn device_telemetry(
         &settings.alert_recipients,
     );
     let email_status = initial_email_status(&recipients);
-    let evidence_duration = 30u32;
+    let evidence_duration = crate::wav::duration(&evidence_bytes)
+        .map(|s| s.ceil() as u32)
+        .unwrap_or(30);
     let mutation = state
         .store
         .mutate(|state| {
@@ -1764,13 +1933,20 @@ async fn device_telemetry(
                 .find(|device| device.id == request.device_id)?;
             let was_offline_alert = target.offline_alert_active;
             target.last_seen = Some(now);
-            target.current_db = Some(avg_db);
-            target.peak_db = Some(peak_db);
-            target.last_reading_at = Some(recorded_at);
-            target.monitoring = true;
+            if target
+                .last_reading_at
+                .is_none_or(|last| recorded_at >= last)
+            {
+                target.current_db = Some(avg_db);
+                target.peak_db = Some(peak_db);
+                target.last_reading_at = Some(recorded_at);
+            }
+            if now.signed_duration_since(recorded_at).num_seconds() <= 60 {
+                target.monitoring = target.desired_monitoring;
+                target.capture_error = None;
+            }
             target.expected_offline = false;
             target.offline_alert_active = false;
-            target.capture_error = None;
 
             let recovered = if was_offline_alert {
                 let mut alert = Alert::new(
@@ -1799,7 +1975,7 @@ async fn device_telemetry(
                 })
                 .unwrap_or(true);
 
-            let noise_alert = if over_threshold && cooldown_elapsed {
+            let noise_alert = if new_reading && over_threshold && cooldown_elapsed {
                 let mut alert = Alert::new(
                     target.id.clone(),
                     AlertKind::Noise,
@@ -1831,10 +2007,7 @@ async fn device_telemetry(
         state.hub.broadcast_alert(&alert);
     }
     if let Some(alert) = &noise_alert {
-        info!(
-            "Noise alert created for {} at {:.1} dB",
-            device.id, avg_db
-        );
+        info!("Noise alert created for {} at {:.1} dB", device.id, avg_db);
         state.hub.broadcast_alert(alert);
         spawn_noise_email(
             state.clone(),
@@ -1846,10 +2019,9 @@ async fn device_telemetry(
         );
     }
     let view = device.view(now, latest_settings.offline_timeout_secs);
-    state.hub.broadcast_event(
-        "device",
-        serde_json::to_value(&view).unwrap_or_default(),
-    );
+    state
+        .hub
+        .broadcast_event("device", serde_json::to_value(&view).unwrap_or_default());
 
     Ok(Json(TelemetryResponse {
         accepted: true,
@@ -1862,6 +2034,7 @@ async fn device_telemetry(
 }
 
 async fn device_stop_intent(
+    _credential: DeviceAuth,
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(request): Json<StopIntentRequest>,
@@ -1874,138 +2047,74 @@ async fn device_stop_intent(
         record_pin_failure(&state, &device, &snapshot.settings, now, "关闭").await?;
     }
 
-    let settings = snapshot.settings.clone();
-    let recipients = crate::models::notification_recipients(
-        &snapshot,
-        &request.device_id,
-        &settings.alert_recipients,
-    );
-    let email_status = initial_email_status(&recipients);
-    let alert = state
-        .store
-        .mutate(|state| {
-            let target = state
-                .devices
-                .iter_mut()
-                .find(|device| device.id == request.device_id)?;
-            target.expected_offline = true;
-            target.monitoring = false;
-            target.last_seen = Some(now);
-            target.last_stop_at = Some(now);
-            target.current_db = None;
-            target.offline_alert_active = false;
-            target.stop_failures = 0;
-            target.stop_locked_until = None;
-            let mut alert = Alert::new(
-                target.id.clone(),
-                AlertKind::Stopped,
-                "info",
-                "设备已授权关闭",
-                format!(
-                    "管理员密码验证通过，设备于 {} 正常关闭。此关闭不会触发离线告警。",
-                    now.with_timezone(&Local).format("%m-%d %H:%M:%S")
-                ),
-            );
-            alert.email_status = email_status;
-            state.alerts.insert(0, alert.clone());
-            Some(alert)
-        })
-        .await?
-        .ok_or_else(|| AppError::not_found("设备不存在"))?;
-    let latest = state.store.snapshot().await;
-    state.hub.broadcast_alert(&alert);
-    if let Some(target) = latest.devices.iter().find(|item| item.id == device.id) {
-        let effective = crate::models::effective_settings(&latest.settings, target);
-        state.hub.broadcast_event(
-            "device",
-            serde_json::to_value(target.view(now, effective.offline_timeout_secs))
-                .unwrap_or_default(),
-        );
-    }
-    spawn_simple_security_email(
-        state.clone(),
-        alert,
-        device,
-        recipients,
-        "设备已授权关闭",
-        "监测客户端已通过管理员密码验证并正常关闭，本次关闭不会触发离线告警。",
-        "#0e7490",
-    );
-
-    Ok(Json(StopIntentResponse {
-        accepted: true,
-        message: "关闭授权成功".to_string(),
-    }))
+    record_authorized_stop(state, device, false).await
 }
 
 async fn device_local_stop(
+    _credential: DeviceAuth,
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(request): Json<LocalStopRequest>,
 ) -> Result<Json<StopIntentResponse>, AppError> {
     let device = authenticate_device(&state, &headers, &request.device_id).await?;
+    record_authorized_stop(state, device, true).await
+}
+
+async fn record_authorized_stop(
+    state: AppState,
+    device: Device,
+    local: bool,
+) -> Result<Json<StopIntentResponse>, AppError> {
     let now = Utc::now();
     let snapshot = state.store.snapshot().await;
-    let settings = snapshot.settings.clone();
     let recipients = crate::models::notification_recipients(
         &snapshot,
-        &request.device_id,
-        &settings.alert_recipients,
+        &device.id,
+        &snapshot.settings.alert_recipients,
     );
     let email_status = initial_email_status(&recipients);
+    let title = if local {
+        "设备已在本地授权关闭"
+    } else {
+        "设备已授权关闭"
+    };
+    let intro = if local {
+        "客户端声明已通过本地密码验证并正常关闭。"
+    } else {
+        "设备已通过服务器关闭密码验证并正常关闭。"
+    };
     let alert = state
         .store
-        .mutate(|state| {
-            let target = state
-                .devices
-                .iter_mut()
-                .find(|device| device.id == request.device_id)?;
+        .mutate(|snapshot| {
+            let target = snapshot.devices.iter_mut().find(|d| d.id == device.id)?;
             target.expected_offline = true;
             target.monitoring = false;
             target.last_seen = Some(now);
             target.last_stop_at = Some(now);
             target.current_db = None;
+            target.live_avg_db = None;
             target.offline_alert_active = false;
             target.stop_failures = 0;
             target.stop_locked_until = None;
-            let mut alert = Alert::new(
-                target.id.clone(),
-                AlertKind::Stopped,
-                "info",
-                "设备已在本地授权关闭",
-                format!(
-                    "客户端本地密码验证通过，设备于 {} 正常关闭。此关闭不会触发离线告警。",
-                    now.with_timezone(&Local).format("%m-%d %H:%M:%S")
-                ),
-            );
+            let mut alert = Alert::new(target.id.clone(), AlertKind::Stopped, "info", title, intro);
             alert.email_status = email_status;
-            state.alerts.insert(0, alert.clone());
+            snapshot.alerts.insert(0, alert.clone());
             Some(alert)
         })
         .await?
         .ok_or_else(|| AppError::not_found("设备不存在"))?;
-    let latest = state.store.snapshot().await;
     state.hub.broadcast_alert(&alert);
-    if let Some(target) = latest.devices.iter().find(|item| item.id == device.id) {
-        let effective = crate::models::effective_settings(&latest.settings, target);
+    if let Some(target) = state.store.device(&device.id).await {
+        let settings = crate::models::effective_settings(&snapshot.settings, &target);
         state.hub.broadcast_event(
             "device",
-            serde_json::to_value(target.view(now, effective.offline_timeout_secs))
-                .unwrap_or_default(),
+            serde_json::to_value(target.view(now, settings.offline_timeout_secs))?,
         );
     }
-    spawn_simple_security_email(
-        state.clone(),
-        alert,
-        device,
-        recipients,
-        "设备已在本地授权关闭",
-        "监测客户端已通过本地密码验证并正常关闭，本次关闭不会触发离线告警。",
-        "#0e7490",
-    );
+    spawn_simple_security_email(state, alert, device, recipients, title, intro, "#0e7490");
     Ok(Json(StopIntentResponse {
         accepted: true,
-        message: "本地关闭授权成功".to_string(),
+        message: "关闭授权成功".to_string(),
     }))
 }
 
@@ -2090,29 +2199,41 @@ async fn create_call(
     let mut audio_file = None;
     let mut audio_mime = None;
     if let Some(raw) = request.audio_base64 {
-        match base64::engine::general_purpose::STANDARD.decode(raw) {
-            Ok(bytes) if !bytes.is_empty() && bytes.len() <= 12 * 1024 * 1024 => {
-                let mime = request
-                    .audio_mime
-                    .unwrap_or_else(|| "audio/webm".to_string());
-                let extension = if mime.contains("wav") {
-                    "wav"
-                } else if mime.contains("mp4") {
-                    "mp4"
-                } else {
-                    "webm"
-                };
-                match state.store.save_call_audio(&bytes, extension).await {
-                    Ok(filename) => {
-                        audio_file = Some(filename);
-                        audio_mime = Some(mime);
-                    }
-                    Err(error) => warn!("Could not store call recording: {error}"),
-                }
-            }
-            Ok(_) => warn!("Ignored invalid or oversized call recording"),
-            Err(error) => warn!("Could not decode call recording: {error}"),
+        let mime = request
+            .audio_mime
+            .unwrap_or_else(|| "audio/webm".to_string());
+        let (mime, extension) = match mime
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "audio/webm" => ("audio/webm", "webm"),
+            "audio/ogg" => ("audio/ogg", "ogg"),
+            "audio/wav" | "audio/x-wav" => ("audio/wav", "wav"),
+            "audio/mp4" => ("audio/mp4", "mp4"),
+            _ => return Err(AppError::bad_request("不支持的录音类型")),
+        };
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(raw)
+            .map_err(|_| AppError::bad_request("录音编码无效"))?;
+        if bytes.is_empty() || bytes.len() > 12 * 1024 * 1024 {
+            return Err(AppError::bad_request("录音为空或超过 12 MiB，请缩短通话"));
         }
+        let valid = match extension {
+            "wav" => looks_like_wav(&bytes),
+            "webm" => bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]),
+            "ogg" => bytes.starts_with(b"OggS"),
+            "mp4" => bytes.len() >= 12 && &bytes[4..8] == b"ftyp",
+            _ => false,
+        };
+        if !valid {
+            return Err(AppError::bad_request("录音内容与类型不匹配"));
+        }
+        audio_file = Some(state.store.save_call_audio(&bytes, extension).await?);
+        audio_mime = Some(mime.to_string());
     }
 
     let record = CallRecord {
@@ -2151,9 +2272,7 @@ async fn list_calls(
         .ok_or_else(|| AppError::bad_request("缺少设备编号"))?;
     admin.ensure_device_access(&device_id)?;
     let calls = state.store.calls_for(&device_id, limit).await;
-    Ok(Json(
-        calls.iter().map(CallRecord::public_view).collect(),
-    ))
+    Ok(Json(calls.iter().map(CallRecord::public_view).collect()))
 }
 
 async fn get_call_audio(
@@ -2170,10 +2289,7 @@ async fn get_call_audio(
     serve_call_audio(&state, call).await
 }
 
-async fn serve_call_audio(
-    state: &AppState,
-    call: CallRecord,
-) -> Result<Response, AppError> {
+async fn serve_call_audio(state: &AppState, call: CallRecord) -> Result<Response, AppError> {
     let filename = call
         .audio_file
         .ok_or_else(|| AppError::not_found("该通话没有录音"))?;
@@ -2183,14 +2299,25 @@ async fn serve_call_audio(
         .read_call_audio(&filename)
         .await?
         .ok_or_else(|| AppError::not_found("通话录音不存在"))?;
-    let mime = call
+    let mime = match call
         .audio_mime
-        .unwrap_or_else(|| "audio/webm".to_string());
+        .as_deref()
+        .unwrap_or("audio/webm")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+    {
+        "audio/wav" | "audio/x-wav" => "audio/wav",
+        "audio/mp4" => "audio/mp4",
+        "audio/ogg" => "audio/ogg",
+        _ => "audio/webm",
+    };
     let mut response = Response::new(Body::from(bytes));
     let headers = response.headers_mut();
     headers.insert(
         header::CONTENT_TYPE,
-        HeaderValue::from_str(&mime).unwrap_or(HeaderValue::from_static("audio/webm")),
+        HeaderValue::from_str(mime).unwrap_or(HeaderValue::from_static("audio/webm")),
     );
     headers.insert(
         header::CONTENT_DISPOSITION,
@@ -2219,9 +2346,7 @@ async fn device_calls(
     authenticate_device(&state, &headers, &query.device_id).await?;
     let limit = query.limit.unwrap_or(10).clamp(1, 50);
     let calls = state.store.calls_for(&query.device_id, limit).await;
-    Ok(Json(
-        calls.iter().map(CallRecord::public_view).collect(),
-    ))
+    Ok(Json(calls.iter().map(CallRecord::public_view).collect()))
 }
 
 async fn device_call_audio(
@@ -2259,8 +2384,10 @@ async fn admin_ws(
     if user.disabled || user.token_version != claims.ver || user.role.as_str() != claims.role {
         return Err(AppError::unauthorized());
     }
-    let current = CurrentUser::from_user(&user);
-    Ok(ws.on_upgrade(move |socket| admin_ws_loop(socket, state, current)))
+    Ok(ws
+        .max_message_size(64 * 1024)
+        .max_frame_size(64 * 1024)
+        .on_upgrade(move |socket| admin_ws_loop(socket, state, claims)))
 }
 
 async fn initial_admin_message(state: &AppState, user: &CurrentUser) -> String {
@@ -2298,7 +2425,10 @@ fn filter_admin_message(message: &str, user: &CurrentUser) -> Option<String> {
         return Some(message.to_string());
     }
     let mut value: Value = serde_json::from_str(message).ok()?;
-    let message_type = value.get("type").and_then(Value::as_str).unwrap_or_default();
+    let message_type = value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let allowed = |device_id: Option<&str>| {
         device_id.is_some_and(|id| !id.is_empty() && user.can_access_device(id))
     };
@@ -2351,24 +2481,57 @@ fn filter_admin_message(message: &str, user: &CurrentUser) -> Option<String> {
                 return None;
             }
         }
-        "live" | "alert" | "call-record" | "signal" | "hangup" | "signal-error"
-        | "command" | "ready" | "signaling" => {
+        "live" | "alert" | "call-record" | "signal" | "hangup" | "signal-error" | "command"
+        | "ready" | "signaling" => {
             let device_id = value
                 .get("deviceId")
                 .and_then(Value::as_str)
-                .or_else(|| value.get("data").and_then(|data| data.get("deviceId")).and_then(Value::as_str))
-                .or_else(|| value.get("data").and_then(|data| data.get("id")).and_then(Value::as_str));
+                .or_else(|| {
+                    value
+                        .get("data")
+                        .and_then(|data| data.get("deviceId"))
+                        .and_then(Value::as_str)
+                })
+                .or_else(|| {
+                    value
+                        .get("data")
+                        .and_then(|data| data.get("id"))
+                        .and_then(Value::as_str)
+                });
             if !allowed(device_id) {
                 return None;
             }
         }
-        "settings" => return None,
+        "settings" => {
+            if let Some(settings) = value.get_mut("data").and_then(Value::as_object_mut) {
+                settings.insert("alertRecipients".into(), json!([]));
+                settings.insert("reportRecipients".into(), json!([]));
+                settings.insert("dailyReportEnabled".into(), json!(false));
+                settings.insert("dailyReportTime".into(), json!(""));
+            }
+        }
         _ => return None,
     }
     Some(value.to_string())
 }
 
-async fn admin_ws_loop(socket: WebSocket, state: AppState, user: CurrentUser) {
+async fn ws_user(state: &AppState, claims: &crate::auth::Claims) -> Option<CurrentUser> {
+    if Utc::now().timestamp() >= claims.exp as i64 {
+        return None;
+    }
+    let user = state.store.user(&claims.sub).await?;
+    if user.disabled || user.token_version != claims.ver || user.role.as_str() != claims.role {
+        return None;
+    }
+    Some(CurrentUser::from_user(&user))
+}
+
+async fn admin_ws_loop(socket: WebSocket, state: AppState, claims: crate::auth::Claims) {
+    let Some(user) = ws_user(&state, &claims).await else {
+        return;
+    };
+    let connection_id = Uuid::new_v4();
+    let mut last_pong = std::time::Instant::now();
     let (mut sender, mut receiver) = socket.split();
     let mut events = state.hub.subscribe_admin();
     let initial = initial_admin_message(&state, &user).await;
@@ -2383,6 +2546,10 @@ async fn admin_ws_loop(socket: WebSocket, state: AppState, user: CurrentUser) {
             broadcast = events.recv() => {
                 match broadcast {
                     Ok(message) => {
+                        let Some(user) = ws_user(&state, &claims).await else { break; };
+                        let target = serde_json::from_str::<Value>(&message).ok()
+                            .and_then(|v| v.get("adminConnectionId").and_then(Value::as_str).map(str::to_owned));
+                        if target.is_some_and(|target| target != connection_id.to_string()) { continue; }
                         if let Some(filtered) = filter_admin_message(&message, &user) {
                             if sender.send(Message::Text(filtered.into())).await.is_err() {
                                 break;
@@ -2391,6 +2558,7 @@ async fn admin_ws_loop(socket: WebSocket, state: AppState, user: CurrentUser) {
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                         warn!("Admin websocket lagged, skipped {skipped} events");
+                        let Some(user) = ws_user(&state, &claims).await else { break; };
                         let resync = initial_admin_message(&state, &user).await;
                         if sender.send(Message::Text(resync.into())).await.is_err() {
                             break;
@@ -2402,9 +2570,11 @@ async fn admin_ws_loop(socket: WebSocket, state: AppState, user: CurrentUser) {
             incoming = receiver.next() => {
                 match incoming {
                     Some(Ok(Message::Text(text))) => {
+                        let Some(user) = ws_user(&state, &claims).await else { break; };
                         let Ok(mut value) = serde_json::from_str::<Value>(&text) else {
                             continue;
                         };
+                        if !value.is_object() { continue; }
                         let message_type = value.get("type").and_then(Value::as_str).unwrap_or_default();
                         if message_type == "signal" || message_type == "hangup" {
                             let device_id = value.get("deviceId").and_then(Value::as_str).unwrap_or_default().to_string();
@@ -2420,8 +2590,17 @@ async fn admin_ws_loop(socket: WebSocket, state: AppState, user: CurrentUser) {
                                 }
                                 continue;
                             }
+                            let Some(call_id_text) = call_id.as_str().filter(|id| !id.is_empty() && id.len() <= 128) else { continue; };
+                            if !state.hub.claim_call(&device_id, connection_id, call_id_text).await {
+                                let error = json!({"type":"signal-error", "callId":call_id, "deviceId":device_id,
+                                    "message":"设备正在与另一位管理员通话"});
+                                if sender.send(Message::Text(error.to_string().into())).await.is_err() { break; }
+                                continue;
+                            }
+                            let ending = message_type == "hangup";
                             value["from"] = Value::String("admin".to_string());
                             if !state.hub.send_to_device(&device_id, value.to_string()).await {
+                                state.hub.finish_call(&device_id, call_id_text).await;
                                 let error = json!({
                                     "type": "signal-error",
                                     "callId": call_id,
@@ -2432,8 +2611,10 @@ async fn admin_ws_loop(socket: WebSocket, state: AppState, user: CurrentUser) {
                                     break;
                                 }
                             }
+                            if ending { state.hub.finish_call(&device_id, call_id_text).await; }
                         }
                     }
+                    Some(Ok(Message::Pong(_))) => { last_pong = std::time::Instant::now(); }
                     Some(Ok(Message::Ping(payload))) => {
                         if sender.send(Message::Pong(payload)).await.is_err() {
                             break;
@@ -2448,12 +2629,14 @@ async fn admin_ws_loop(socket: WebSocket, state: AppState, user: CurrentUser) {
                 }
             }
             _ = ticker.tick() => {
+                if last_pong.elapsed().as_secs() > 75 || ws_user(&state, &claims).await.is_none() { break; }
                 if sender.send(Message::Ping(Vec::new().into())).await.is_err() {
                     break;
                 }
             }
         }
     }
+    state.hub.disconnect_admin(connection_id).await;
 }
 
 async fn device_ws(
@@ -2463,10 +2646,14 @@ async fn device_ws(
 ) -> Result<Response, AppError> {
     let device_id = query.device_id.unwrap_or_default();
     authenticate_device_query(&state, &query.token, &device_id).await?;
-    Ok(ws.on_upgrade(move |socket| device_ws_loop(socket, state, device_id)))
+    Ok(ws
+        .max_message_size(64 * 1024)
+        .max_frame_size(64 * 1024)
+        .on_upgrade(move |socket| device_ws_loop(socket, state, device_id, query.token)))
 }
 
-async fn device_ws_loop(socket: WebSocket, state: AppState, device_id: String) {
+async fn device_ws_loop(socket: WebSocket, state: AppState, device_id: String, token: String) {
+    let mut last_pong = std::time::Instant::now();
     let (tx, mut rx) = mpsc::channel::<String>(128);
     let connection_id = state.hub.register_device(device_id.clone(), tx).await;
     state.hub.broadcast_event(
@@ -2494,6 +2681,7 @@ async fn device_ws_loop(socket: WebSocket, state: AppState, device_id: String) {
             outbound = rx.recv() => {
                 match outbound {
                     Some(message) => {
+                        if authenticate_device_query(&state, &token, &device_id).await.is_err() { break; }
                         if sender.send(Message::Text(message.into())).await.is_err() {
                             break;
                         }
@@ -2504,17 +2692,26 @@ async fn device_ws_loop(socket: WebSocket, state: AppState, device_id: String) {
             incoming = receiver.next() => {
                 match incoming {
                     Some(Ok(Message::Text(text))) => {
+                        if authenticate_device_query(&state, &token, &device_id).await.is_err() { break; }
                         let Ok(mut value) = serde_json::from_str::<Value>(&text) else {
                             continue;
                         };
+                        if !value.is_object() { continue; }
                         let message_type = value.get("type").and_then(Value::as_str).unwrap_or_default();
                         if message_type == "signal" || message_type == "hangup" {
+                            if !state.hub.is_current_device(&device_id, connection_id).await { break; }
+                            let call_id = value.get("callId").and_then(Value::as_str).unwrap_or_default().to_string();
+                            let Some(owner) = state.hub.call_owner(&device_id, &call_id).await else { continue; };
+                            let ending = message_type == "hangup" || value.get("payload").and_then(|p| p.get("kind")).and_then(Value::as_str) == Some("reject");
+                            value["adminConnectionId"] = Value::String(owner.to_string());
                             value["from"] = Value::String("device".to_string());
                             value["to"] = Value::String("admin".to_string());
                             value["deviceId"] = Value::String(device_id.clone());
                             state.hub.broadcast_raw(value.to_string());
+                            if ending { state.hub.finish_call(&device_id, &call_id).await; }
                         }
                     }
+                    Some(Ok(Message::Pong(_))) => { last_pong = std::time::Instant::now(); }
                     Some(Ok(Message::Ping(payload))) => {
                         if sender.send(Message::Pong(payload)).await.is_err() {
                             break;
@@ -2529,6 +2726,7 @@ async fn device_ws_loop(socket: WebSocket, state: AppState, device_id: String) {
                 }
             }
             _ = ticker.tick() => {
+                if last_pong.elapsed().as_secs() > 75 || authenticate_device_query(&state, &token, &device_id).await.is_err() { break; }
                 if sender.send(Message::Ping(Vec::new().into())).await.is_err() {
                     break;
                 }
@@ -2536,9 +2734,15 @@ async fn device_ws_loop(socket: WebSocket, state: AppState, device_id: String) {
         }
     }
 
+    let was_current = state.hub.is_current_device(&device_id, connection_id).await;
     state.hub.unregister_device(&device_id, connection_id).await;
-    state.hub.broadcast_event(
-        "signaling",
-        json!({ "deviceId": device_id, "connected": false }),
-    );
+    if was_current {
+        state.hub.disconnect_call_device(&device_id).await;
+    }
+    if !state.hub.device_connected(&device_id).await {
+        state.hub.broadcast_event(
+            "signaling",
+            json!({ "deviceId": device_id, "connected": false }),
+        );
+    }
 }
