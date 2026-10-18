@@ -42,7 +42,7 @@ struct ClientConfig {
 impl Default for ClientConfig {
     fn default() -> Self {
         Self {
-            server_url: "http://127.0.0.1:8080".to_string(),
+            server_url: "https://db.gzmath.cn".to_string(),
             device_id: String::new(),
             device_token: String::new(),
             calibration_offset_db: 90.0,
@@ -60,7 +60,7 @@ impl ClientConfig {
             return Err("服务器地址不能为空".to_string());
         }
         let parsed = reqwest::Url::parse(&self.server_url)
-            .map_err(|_| "服务器地址格式无效，应类似 http://127.0.0.1:8080".to_string())?;
+            .map_err(|_| "服务器地址格式无效，应类似 https://db.gzmath.cn".to_string())?;
         if !matches!(parsed.scheme(), "http" | "https") {
             return Err("服务器地址必须使用 http 或 https".to_string());
         }
@@ -475,6 +475,14 @@ async fn request_exit(
     Ok(())
 }
 
+/// Immediate shutdown used when the user declines the first-run notice.
+/// No password is required: the app must not keep running without consent.
+#[tauri::command]
+fn exit_now(app: AppHandle, state: State<'_, Arc<RuntimeState>>) {
+    state.exiting.store(true, Ordering::SeqCst);
+    app.exit(0);
+}
+
 fn emit_status(app: &AppHandle, state: &RuntimeState) {
     let status = state
         .status
@@ -881,7 +889,8 @@ fn main() {
             set_call_active,
             verify_pin,
             open_github,
-            request_exit
+            request_exit,
+            exit_now
         ])
         .setup(|app| {
             let legacy_config_dir = app
@@ -978,7 +987,7 @@ mod local_auth_tests {
     fn setup_is_required_until_device_and_password_exist() {
         let mut config = ClientConfig::default();
         assert!(config.needs_setup());
-        config.server_url = "http://127.0.0.1:8080".to_string();
+        config.server_url = "https://db.gzmath.cn".to_string();
         config.device_id = "dev-test".to_string();
         config.device_token = "token".to_string();
         config.local_password_hash = "hash".to_string();

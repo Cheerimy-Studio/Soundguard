@@ -1396,7 +1396,7 @@
 
   function mockState() {
     const config = {
-      serverUrl: "http://127.0.0.1:8080",
+      serverUrl: "https://db.gzmath.cn",
       deviceId: "",
       deviceToken: "",
       calibrationOffsetDb: 90,
@@ -1579,7 +1579,7 @@
 
   function showSetup(config) {
     state.setupRequired = true;
-    els.setupServerUrl.value = config?.serverUrl || "http://127.0.0.1:8080";
+    els.setupServerUrl.value = config?.serverUrl || "https://db.gzmath.cn";
     els.setupDeviceId.value = config?.deviceId || "";
     els.setupDeviceToken.value = config?.deviceToken || "";
     els.setupPassword.value = "";
@@ -1673,9 +1673,8 @@
       $("consent-accept").removeEventListener("click", accept);
       $("consent-exit").removeEventListener("click", exit);
       if (isDesktop) {
-        // Exiting before setup needs no local password; otherwise close the
-        // window and let the Rust close-handler show the password prompt.
-        window.close();
+        // Declining the notice must terminate the whole app, not just the page.
+        void tauri.core.invoke("exit_now").catch(() => window.close());
       }
     };
     $("consent-accept").addEventListener("click", accept);
