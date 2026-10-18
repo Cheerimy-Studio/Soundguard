@@ -1816,8 +1816,64 @@
     showLogin("");
   }
 
+  const CONSENT_KEY = "soundguard.consent.v1";
+
+  function consentAccepted() {
+    try {
+      return localStorage.getItem(CONSENT_KEY) === "accepted";
+    } catch (error) {
+      return true;
+    }
+  }
+
+  function askForConsent(next) {
+    const view = $("consentView");
+    if (!view) {
+      next();
+      return;
+    }
+    view.classList.remove("hidden");
+    const accept = () => {
+      try {
+        localStorage.setItem(CONSENT_KEY, "accepted");
+      } catch (error) {
+        // Storage may be unavailable; continue for this session.
+      }
+      cleanup();
+      next();
+    };
+    const decline = () => {
+      cleanup();
+      if (window.Android && typeof window.Android.clearSession === "function") {
+        try { window.Android.clearSession(); } catch (error) { /* Ignore. */ }
+      }
+      window.location.reload();
+    };
+    const cleanup = () => {
+      view.classList.add("hidden");
+      $("consentAcceptBtn").removeEventListener("click", accept);
+      $("consentExitBtn").removeEventListener("click", decline);
+    };
+    $("consentAcceptBtn").addEventListener("click", accept);
+    $("consentExitBtn").addEventListener("click", decline);
+  }
+
+  function withConsent(next) {
+    if (consentAccepted()) {
+      next();
+      return;
+    }
+    askForConsent(next);
+  }
+
   async function boot() {
     bindEvents();
+    withConsent(() => {
+      void continueBoot();
+    });
+  }
+
+  async function continueBoot() {
     const server = normalizeServer(localStorage.getItem(LS_SERVER) || "");
     const token = localStorage.getItem(LS_TOKEN) || "";
     if (!server || !token) {

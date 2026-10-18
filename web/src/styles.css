@@ -3965,33 +3965,52 @@ input[type="range"]:disabled {
 .evidence-setting {
   display: flex;
   align-items: center;
-  gap: 20px;
-  padding: 13px 15px;
-  border-radius: 11px;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 16px;
+  border-radius: 12px;
   background: rgba(5, 12, 22, 0.42);
   border: 1px solid rgba(112, 146, 181, 0.09);
 }
 
-.evidence-setting > div {
-  flex: 0 0 105px;
+.evidence-duration {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
+  flex: 0 0 auto;
 }
 
-.evidence-setting span {
+.evidence-duration span {
   color: #587188;
   font-size: 8.5px;
 }
 
-.evidence-setting strong {
+.evidence-duration strong {
   color: #c7dcec;
-  font-size: 13px;
-  font-weight: 650;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
-.evidence-setting input {
-  flex: 1;
+.evidence-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px 10px;
+  color: #6c8499;
+  font-size: 9.5px;
+  line-height: 1.5;
+}
+
+.evidence-tag {
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: #8fd9d4;
+  background: rgba(20, 160, 150, 0.09);
+  border: 1px solid rgba(20, 160, 150, 0.16);
+  font-size: 8.5px;
+  font-weight: 600;
 }
 
 .policy-card {
@@ -5387,4 +5406,13 @@ input[type="range"]:disabled {
     max-height: calc(100vh - 24px);
     border-radius: 18px 18px 12px 12px;
   }
+}
+
+.brand-logo {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  border-radius: 13px;
+  object-fit: cover;
+  box-shadow: 0 10px 30px -13px rgba(34, 211, 238, 0.55);
 }

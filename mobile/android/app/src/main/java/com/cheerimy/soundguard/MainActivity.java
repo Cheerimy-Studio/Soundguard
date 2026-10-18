@@ -133,6 +133,14 @@ public class MainActivity extends Activity {
                 CHANNEL_ALERT, "分贝超标提醒", NotificationManager.IMPORTANCE_HIGH);
         alert.setDescription("设备环境声音超过阈值时立即提醒。");
         alert.enableVibration(true);
+        alert.setVibrationPattern(new long[]{0, 350, 180, 350, 180, 600});
+        alert.enableLights(true);
+        alert.setSound(
+                android.provider.Settings.System.DEFAULT_NOTIFICATION_URI,
+                new android.media.AudioAttributes.Builder()
+                        .setUsage(android.media.AudioAttributes.USAGE_ALARM)
+                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build());
         manager.createNotificationChannel(alert);
     }
 

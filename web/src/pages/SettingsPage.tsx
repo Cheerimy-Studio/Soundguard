@@ -448,9 +448,13 @@ export function SettingsPage({ overview, deviceId, onSave, onNotify }: SettingsP
               </button>
             </div>
             <div className="evidence-setting">
-              <div>
+              <div className="evidence-duration">
                 <span>证据时长</span>
-                <strong>30 秒 · 完整平均区间</strong>
+                <strong>30 秒</strong>
+              </div>
+              <div className="evidence-meta">
+                <span className="evidence-tag">完整平均区间</span>
+                <span>单声道 · 48 kHz WAV</span>
               </div>
             </div>
             <div className="inline-note">

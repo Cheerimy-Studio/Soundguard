@@ -8,6 +8,40 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
+    <div class="consent-modal" id="consent-modal" hidden>
+      <div class="consent-card">
+        <div class="consent-brand">
+          <div class="brand-mark">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round">
+              <path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 10v4" />
+            </svg>
+          </div>
+          <div>
+            <strong>声垣</strong>
+            <span>使用须知</span>
+          </div>
+        </div>
+        <ol class="consent-list">
+          <li>
+            <strong>通知与邮件</strong>
+            <span>开启后，声垣会向你推送超标通知，并向管理员设置的邮箱发送告警邮件。</span>
+          </li>
+          <li>
+            <strong>录音保存</strong>
+            <span>声音超过阈值时，声垣会保存该时段前后共 30 秒的现场录音，供管理员在后台回放和取证。</span>
+          </li>
+          <li>
+            <strong>责任说明</strong>
+            <span>声垣仅提供声音监测数据，测量结果仅供参考，不作为任何处理决定的唯一依据。因现场环境、设备故障或使用不当造成的后果，由使用方自行承担。声垣保留对本须知及产品功能的最终解释权。</span>
+          </li>
+        </ol>
+        <div class="consent-actions">
+          <button type="button" class="ghost-button" id="consent-exit">退出</button>
+          <button type="button" class="primary-button" id="consent-accept">同意并继续</button>
+        </div>
+      </div>
+    </div>
+
     <div class="setup-screen" id="setup-screen" hidden>
       <div class="setup-card">
         <div class="setup-brand">

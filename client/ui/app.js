@@ -209,7 +209,7 @@
   }
 
   let beepContext = null;
-  function beep(frequency = 840, duration = 0.18) {
+  function beep(frequency = 840, duration = 0.18, volume = 0.06) {
     try {
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       if (!AudioContextClass) return;
@@ -219,7 +219,7 @@
       const gain = beepContext.createGain();
       oscillator.type = "sine";
       oscillator.frequency.value = frequency;
-      gain.gain.setValueAtTime(0.06, beepContext.currentTime);
+      gain.gain.setValueAtTime(volume, beepContext.currentTime);
       gain.gain.exponentialRampToValueAtTime(0.0001, beepContext.currentTime + duration);
       oscillator.connect(gain);
       gain.connect(beepContext.destination);
@@ -227,6 +227,19 @@
       oscillator.stop(beepContext.currentTime + duration);
     } catch {
       // Sound feedback is optional.
+    }
+  }
+
+  // A longer, louder three-tone alarm so an over-limit window is noticed
+  // even in a noisy classroom.
+  function overLimitAlarm() {
+    const pattern = [
+      [880, 0, 0.28],
+      [880, 0.36, 0.28],
+      [880, 0.72, 0.28],
+    ];
+    for (const [frequency, delay, duration] of pattern) {
+      window.setTimeout(() => beep(frequency, duration, 0.22), delay * 1000);
     }
   }
 
@@ -497,7 +510,7 @@
 
     if (over && !suspended && !ignoringSystem && !state.lastOver) {
       state.lastOver = true;
-      beep(760, 0.2);
+      overLimitAlarm();
     } else if (!over && average !== null && Number(average) < threshold - 2) {
       state.lastOver = false;
     }
@@ -1627,6 +1640,56 @@
     }
   }
 
+  const CONSENT_KEY = "soundguard.consent.v1";
+
+  function consentAccepted() {
+    try {
+      return localStorage.getItem(CONSENT_KEY) === "accepted";
+    } catch {
+      return true;
+    }
+  }
+
+  function askForConsent(onAccepted) {
+    const modal = $("consent-modal");
+    if (!modal) {
+      onAccepted();
+      return;
+    }
+    modal.hidden = false;
+    const accept = () => {
+      try {
+        localStorage.setItem(CONSENT_KEY, "accepted");
+      } catch {
+        // Storage may be unavailable; continue for this session.
+      }
+      modal.hidden = true;
+      $("consent-accept").removeEventListener("click", accept);
+      $("consent-exit").removeEventListener("click", exit);
+      onAccepted();
+    };
+    const exit = () => {
+      modal.hidden = true;
+      $("consent-accept").removeEventListener("click", accept);
+      $("consent-exit").removeEventListener("click", exit);
+      if (isDesktop) {
+        // Exiting before setup needs no local password; otherwise close the
+        // window and let the Rust close-handler show the password prompt.
+        window.close();
+      }
+    };
+    $("consent-accept").addEventListener("click", accept);
+    $("consent-exit").addEventListener("click", exit);
+  }
+
+  function withConsent(next) {
+    if (consentAccepted()) {
+      next();
+      return;
+    }
+    askForConsent(next);
+  }
+
   async function boot() {
     bindEvents();
     document.addEventListener("contextmenu", (event) => event.preventDefault());
@@ -1643,11 +1706,13 @@
         }
         renderStatus();
         await bindDesktopEvents();
-        if (initial.needsSetup) {
-          showSetup(initial.config);
-        } else {
-          startDesktopRuntime();
-        }
+        withConsent(() => {
+          if (initial.needsSetup) {
+            showSetup(initial.config);
+          } else {
+            startDesktopRuntime();
+          }
+        });
       } catch (error) {
         console.error(error);
         toast(
@@ -1657,7 +1722,7 @@
         );
       }
     } else {
-      startPreview();
+      withConsent(startPreview);
     }
 
     window.setInterval(updateTimes, 1000);

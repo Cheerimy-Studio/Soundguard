@@ -232,6 +232,26 @@ body {
   border-color: #f4d2d2 !important;
 }
 
+.evidence-setting {
+  background: var(--card-soft) !important;
+  border-color: var(--border) !important;
+}
+
+.evidence-duration span,
+.evidence-meta {
+  color: var(--muted) !important;
+}
+
+.evidence-duration strong {
+  color: var(--text) !important;
+}
+
+.evidence-tag {
+  color: var(--accent) !important;
+  background: var(--accent-soft) !important;
+  border-color: #d5ecee !important;
+}
+
 .page-content {
   background: transparent !important;
   padding: 20px 30px 38px;
@@ -2134,4 +2154,17 @@ input[type="range"]::-webkit-slider-thumb {
   .account-chip {
     display: none;
   }
+}
+
+.brand-logo {
+  background: var(--accent-soft);
+  border: 1px solid var(--border);
+  box-shadow: none !important;
+}
+
+.login-brand .brand-logo {
+  width: 42px;
+  height: 42px;
+  flex-basis: 42px;
+  border-radius: 12px;
 }

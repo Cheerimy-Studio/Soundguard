@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowRight, Eye, EyeOff, LockKeyhole, Waves } from "lucide-react";
+import { ArrowRight, Eye, EyeOff, LockKeyhole } from "lucide-react";
 import { api, setToken } from "../api";
 import type { HealthResponse, User } from "../types";
 
@@ -50,12 +50,9 @@ export function Login({ onAuthenticated }: LoginProps) {
   return (
     <div className="login-simple">
       <div className="login-brand">
-        <div className="brand-mark">
-          <Waves size={22} strokeWidth={2.4} />
-        </div>
+        <img src="/logo-64.png" alt="声垣" className="brand-logo" width={42} height={42} />
         <div>
           <div className="brand-name">声垣</div>
-          <div className="brand-latin">SOUNDGUARD</div>
         </div>
       </div>
 

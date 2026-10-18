@@ -727,12 +727,9 @@ export default function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="sidebar-brand">
-          <div className="brand-mark">
-            <Waves size={21} strokeWidth={2.4} />
-          </div>
+          <img src="/logo-64.png" alt="声垣" className="brand-logo" width={40} height={40} />
           <div>
             <div className="brand-name">声垣</div>
-            <div className="brand-latin">SOUNDGUARD</div>
           </div>
         </div>
 
