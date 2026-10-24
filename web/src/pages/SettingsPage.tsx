@@ -423,7 +423,7 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
                     checked={policy.follow.thresholdDb}
                     onChange={(event) => toggleFollow("thresholdDb", event.target.checked)}
                   />
-                  <span>阈值跟随全局默认（{baseline.thresholdDb.toFixed(1)} dB）</span>
+                  <span>阈值跟随全局默认</span>
                 </label>
                 <div className="field-grid three">
                   <label className="form-field">
@@ -444,7 +444,7 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
                         checked={policy.follow.alertCooldownSecs}
                         onChange={(event) => toggleFollow("alertCooldownSecs", event.target.checked)}
                       />
-                      <span>跟随全局（{baseline.alertCooldownSecs >= 60 ? `${Math.round(baseline.alertCooldownSecs / 60)} 分钟` : `${baseline.alertCooldownSecs} 秒`}）</span>
+                      <span>跟随全局默认</span>
                     </label>
                   </label>
                   <label className="form-field">
@@ -466,7 +466,7 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
                         checked={policy.follow.offlineTimeoutSecs}
                         onChange={(event) => toggleFollow("offlineTimeoutSecs", event.target.checked)}
                       />
-                      <span>跟随全局（{baseline.offlineTimeoutSecs >= 60 ? `${Math.round(baseline.offlineTimeoutSecs / 60)} 分钟` : `${baseline.offlineTimeoutSecs} 秒`}）</span>
+                      <span>跟随全局默认</span>
                     </label>
                   </label>
                   <label className="form-field">
@@ -484,7 +484,7 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
                         checked={policy.follow.autoRecordEvidence}
                         onChange={(event) => toggleFollow("autoRecordEvidence", event.target.checked)}
                       />
-                      <span>跟随全局（{baseline.autoRecordEvidence ? "开启" : "关闭"}）</span>
+                      <span>跟随全局默认</span>
                     </label>
                   </label>
                 </div>
@@ -530,7 +530,7 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
             <div className="settings-card-head">
               <div className="settings-icon cyan"><SlidersHorizontal size={18} /></div>
               <div>
-                <h3>{isSuper ? "全局默认 · 分贝告警阈值" : "全局默认 · 分贝告警阈值（只读）"}</h3>
+                <h3>{isSuper ? "全局默认 · 分贝告警阈值" : "分贝告警阈值（全局默认，只读）"}</h3>
                 <p>客户端每 30 秒计算一次平均分贝，达到阈值即生成告警并发送邮件。</p>
               </div>
             </div>
@@ -853,7 +853,7 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
             <div className="settings-card-head">
               <div className="settings-icon rose"><CloudCog size={18} /></div>
               <div>
-                <h3>NVIDIA 云降噪（证据试听）</h3>
+                <h3>NVIDIA 云降噪</h3>
                 <p>配置 build.nvidia.com 的 API Key 后，告警中心回放超限证据时可一键调用 NVIDIA BNR 云端降噪。音频将上传至 NVIDIA 处理，请确认现场告知与合规要求。</p>
               </div>
             </div>
