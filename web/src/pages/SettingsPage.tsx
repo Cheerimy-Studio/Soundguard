@@ -103,6 +103,8 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
   const [updateLoading, setUpdateLoading] = useState(false);
   const [updateApplying, setUpdateApplying] = useState(false);
   const [updateMessage, setUpdateMessage] = useState("");
+  const [fixedPasswordInput, setFixedPasswordInput] = useState("");
+  const [fixedPasswordSaving, setFixedPasswordSaving] = useState(false);
   const [alertEmails, setAlertEmails] = useState(overview.settings.alertRecipients.join(", "));
   const [reportEmails, setReportEmails] = useState(overview.settings.reportRecipients.join(", "));
   const [saving, setSaving] = useState(false);
@@ -265,6 +267,21 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
       setUpdateMessage(error instanceof Error ? error.message : "更新失败");
     } finally {
       setUpdateApplying(false);
+    }
+  }
+
+  async function saveFixedPassword() {
+    if (fixedPasswordSaving) return;
+    setFixedPasswordSaving(true);
+    try {
+      const settings = { ...form, fixedPasswordHash: fixedPasswordInput.trim() };
+      await onSave(settings);
+      setFixedPasswordInput("");
+      onNotify("固定密码已保存", "success");
+    } catch (error) {
+      onNotify(error instanceof Error ? error.message : "保存失败", "error");
+    } finally {
+      setFixedPasswordSaving(false);
     }
   }
 
@@ -909,6 +926,86 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
                   查看发布说明
                 </a>
               )}
+            </div>
+          </section>
+
+          <section className="panel settings-card">
+            <div className="settings-card-head">
+              <div className="settings-icon amber"><Megaphone size={18} /></div>
+              <div>
+                <h3>分贝战争</h3>
+                <p>早读等需要大声朗读的场景。开启后客户端切换金色主题，设备按平均分贝实时排名。</p>
+              </div>
+              <button
+                type="button"
+                className={`switch ${form.warModeEnabled ? "is-on" : ""}`}
+                role="switch"
+                aria-checked={form.warModeEnabled}
+                aria-label="启用分贝战争"
+                onClick={() => update("warModeEnabled", !form.warModeEnabled)}
+              >
+                <span />
+              </button>
+            </div>
+            <div className="field-grid">
+              <label className="form-field">
+                <span>开始时间</span>
+                <input type="time" value={form.warModeStart} onChange={(e) => update("warModeStart", e.target.value)} disabled={!form.warModeEnabled} />
+              </label>
+              <label className="form-field">
+                <span>结束时间</span>
+                <input type="time" value={form.warModeEnd} onChange={(e) => update("warModeEnd", e.target.value)} disabled={!form.warModeEnabled} />
+              </label>
+            </div>
+            <div className="inline-note">非指定时段自动恢复普通模式。客户端切换到分贝战争需要 2FA 验证码或固定密码。</div>
+          </section>
+
+          <section className="panel settings-card">
+            <div className="settings-card-head">
+              <div className="settings-icon cyan"><Clock3 size={18} /></div>
+              <div>
+                <h3>定时采集</h3>
+                <p>按服务器时间在指定时段自动开启采集，其余时间暂停。留空则始终手动控制。</p>
+              </div>
+            </div>
+            <div className="field-grid">
+              <label className="form-field">
+                <span>自动开启</span>
+                <input type="time" value={form.captureStart} onChange={(e) => update("captureStart", e.target.value)} />
+              </label>
+              <label className="form-field">
+                <span>自动暂停</span>
+                <input type="time" value={form.captureEnd} onChange={(e) => update("captureEnd", e.target.value)} />
+              </label>
+            </div>
+            <div className="inline-note">客户端每次心跳（10 秒）会同步采集状态，无需手动干预。</div>
+          </section>
+
+          <section className="panel settings-card">
+            <div className="settings-card-head">
+              <div className="settings-icon rose"><KeyRound size={18} /></div>
+              <div>
+                <h3>固定操作密码</h3>
+                <p>设置后客户端可用固定密码替代 2FA 动态验证码进行本地验证（适合无法联网的场景）。留空则仅使用 2FA。</p>
+              </div>
+            </div>
+            <div className="field-grid">
+              <label className="form-field">
+                <span>新密码</span>
+                <input
+                  type="password"
+                  value={fixedPasswordInput}
+                  onChange={(e) => setFixedPasswordInput(e.target.value)}
+                  placeholder="至少 8 个字符，留空保持不变"
+                  autoComplete="new-password"
+                />
+              </label>
+            </div>
+            <div className="mail-actions">
+              <button type="button" className="primary-button" onClick={() => void saveFixedPassword()} disabled={fixedPasswordSaving || !fixedPasswordInput.trim()}>
+                {fixedPasswordSaving ? <LoaderCircle size={14} className="spin" /> : <Save size={14} />}
+                保存固定密码
+              </button>
             </div>
           </section>
 

@@ -67,6 +67,12 @@ export interface Settings {
   dailyReportTime: string;
   denoiseMode: string;
   voiceEnhance: boolean;
+  warModeEnabled: boolean;
+  warModeStart: string;
+  warModeEnd: string;
+  fixedPasswordHash: string;
+  captureStart: string;
+  captureEnd: string;
   offlineTimeoutSecs: number;
   alertCooldownSecs: number;
   evidenceSeconds: number;
