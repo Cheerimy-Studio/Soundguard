@@ -10,7 +10,7 @@ use wasapi::{
 
 include!("../../common/audio_core.rs");
 
-const TARGET_CAPTURE_RATE: u32 = 44_100;
+const TARGET_CAPTURE_RATE: u32 = 48_000;
 const TARGET_CAPTURE_CHANNELS: usize = 2;
 
 pub enum AudioCommand {

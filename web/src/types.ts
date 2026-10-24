@@ -59,6 +59,8 @@ export interface Settings {
   reportRecipients: string[];
   dailyReportEnabled: boolean;
   dailyReportTime: string;
+  denoiseMode: string;
+  voiceEnhance: boolean;
   offlineTimeoutSecs: number;
   alertCooldownSecs: number;
   evidenceSeconds: number;

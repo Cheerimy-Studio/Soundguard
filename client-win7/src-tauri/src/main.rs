@@ -1,6 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio;
+
+#[path = "../../../client/common/rnnoise_engine.rs"]
+mod rnnoise_engine;
 #[path = "../../../client/common/config_file.rs"]
 mod config_file;
 #[path = "../../../client/common/security.rs"]
@@ -286,6 +289,10 @@ struct HeartbeatResponse {
     notification_enabled: bool,
     notification_title: String,
     notification_content: String,
+    #[serde(default)]
+    denoise_mode: String,
+    #[serde(default)]
+    voice_enhance: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -655,6 +662,15 @@ async fn network_loop(app: AppHandle, state: Arc<RuntimeState>) {
                         status.notification_enabled = response.notification_enabled;
                         status.notification_title = response.notification_title.clone();
                         status.notification_content = response.notification_content.clone();
+                        let denoise_mode = match response.denoise_mode.as_str() {
+                            "light" => audio::DENOISE_LIGHT,
+                            "standard" => audio::DENOISE_STANDARD,
+                            "strong" => audio::DENOISE_STRONG,
+                            _ => audio::DENOISE_OFF,
+                        };
+                        state
+                            .audio
+                            .set_denoise(denoise_mode, response.voice_enhance);
                         status.ice_servers = response.ice_servers;
                     });
                 }
@@ -986,6 +1002,9 @@ fn main() {
             }
             let config = load_or_create_config(&config_path).map_err(std::io::Error::other)?;
             let audio = AudioShared::new(config.calibration_offset_db as f32);
+            audio.set_engine(Box::new(
+                rnnoise_engine::RnnoiseEngine::new(audio::DENOISE_OFF, false),
+            ));
             let audio_tx = audio::spawn_audio_engine(audio.clone());
             let remote = RemoteConfig::default();
             let status = build_status(&config, &remote);

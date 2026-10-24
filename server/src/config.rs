@@ -398,6 +398,8 @@ impl Config {
             notification_enabled: false,
             notification_title: String::new(),
             notification_content: String::new(),
+            denoise_mode: "off".to_string(),
+            voice_enhance: false,
         };
 
         default_settings
@@ -500,6 +502,8 @@ mod tests {
             notification_enabled: false,
             notification_title: String::new(),
             notification_content: String::new(),
+            denoise_mode: "off".to_string(),
+            voice_enhance: false,
         }
     }
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
+  AudioWaveform,
   BellRing,
   CheckCircle2,
   Clock3,
@@ -489,6 +490,54 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
             <div className="threshold-hint">
               <BellRing size={14} />
               建议室内会议场景设置在 60–70 dB。超限事件会按冷却时间合并发送邮件，避免连续轰炸。
+            </div>
+          </section>
+
+          <section className="panel settings-card">
+            <div className="settings-card-head">
+              <div className="settings-icon cyan"><AudioWaveform size={18} /></div>
+              <div>
+                <h3>AI 降噪与人声增强</h3>
+                <p>基于 RNNoise 神经网络：常驻背景噪声（如 60 dB 环境嗡声）被持续抑制，突发人声和异常事件保持突出。开启后分贝值反映降噪后的信号，请重新校准阈值。</p>
+              </div>
+            </div>
+            <div className="field-grid">
+              <label className="form-field">
+                <span>降噪模式</span>
+                <select
+                  value={form.denoiseMode}
+                  onChange={(event) => update("denoiseMode", event.target.value)}
+                >
+                  <option value="off">关闭 · 原始声压测量</option>
+                  <option value="light">轻度 · 保留更多环境细节</option>
+                  <option value="standard">标准 · 推荐常驻噪声场所</option>
+                  <option value="strong">强化 · 噪声门限随语音活动加深</option>
+                </select>
+                <small>所有采集端在下一次心跳时自动应用（约 10 秒）。</small>
+              </label>
+              <label className="form-field">
+                <span>人声增强</span>
+                <div className="static-value">
+                  {form.voiceEnhance ? (
+                    <><CheckCircle2 size={14} /> 语音临场感提升已开启</>
+                  ) : (
+                    <>关闭</>
+                  )}
+                </div>
+                <small>降噪后对 2–5 kHz 语音频段做临场感提升，证据回放更清晰。</small>
+              </label>
+            </div>
+            <label className="check-row policy-switch-row">
+              <input
+                type="checkbox"
+                checked={form.voiceEnhance}
+                onChange={(event) => update("voiceEnhance", event.target.checked)}
+              />
+              <span>为该系统的证据录音与分贝测量启用人声增强</span>
+            </label>
+            <div className="inline-note">
+              <Volume2 size={13} />
+              降噪在采集端本地完成，不改变证据的存储与加密方式；切换模式会重新开始 30 秒测量窗口。
             </div>
           </section>
 

@@ -1,7 +1,7 @@
 use std::{
     collections::VecDeque,
     sync::{
-        atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     time::Instant,
@@ -10,6 +10,25 @@ pub const WINDOW_SECONDS: f64 = 30.0;
 const EVIDENCE_RING_SECONDS: usize = 32;
 const TARGET_EVIDENCE_RATE: u32 = 48_000;
 const SYSTEM_PLAYBACK_THRESHOLD: f32 = 0.0045;
+
+pub const DENOISE_OFF: u8 = 0;
+pub const DENOISE_LIGHT: u8 = 1;
+pub const DENOISE_STANDARD: u8 = 2;
+pub const DENOISE_STRONG: u8 = 3;
+
+/// Streaming denoise engine injected at startup. The RNNoise AI engine lives
+/// in `rnnoise_engine.rs` (it needs the nnnoiseless crate); audio_core stays
+/// dependency-free so the shared-core test script can compile it standalone.
+pub trait DenoiseEngine: Send {
+    /// Process a mono block. Must return exactly `input.len()` samples so the
+    /// meter and the evidence ring keep a stable 1:1 sample mapping.
+    fn process(&mut self, input: &[f32], output: &mut Vec<f32>);
+    /// Applied when the administrator changes the denoise settings; engines
+    /// should drop learned state here (the 30 s window is reset as well).
+    fn set_config(&mut self, mode: u8, voice_enhance: bool);
+    /// Drop learned state (pause/resume, calibration, mode change).
+    fn reset(&mut self);
+}
 
 #[derive(Debug, Clone)]
 pub struct MeterSnapshot {
@@ -137,6 +156,9 @@ pub struct AudioShared {
     window: Mutex<Accumulator>,
     ring: Mutex<RingBuffer>,
     denoiser: Mutex<Denoiser>,
+    denoise_mode: AtomicU8,
+    voice_enhance: AtomicBool,
+    engine: Mutex<Option<Box<dyn DenoiseEngine>>>,
     error: Mutex<Option<String>>,
 }
 
@@ -159,6 +181,9 @@ impl AudioShared {
                 samples: VecDeque::with_capacity(48_000 * 4),
             }),
             denoiser: Mutex::new(Denoiser::new()),
+            denoise_mode: AtomicU8::new(DENOISE_OFF),
+            voice_enhance: AtomicBool::new(false),
+            engine: Mutex::new(None),
             error: Mutex::new(None),
         })
     }
@@ -171,6 +196,44 @@ impl AudioShared {
 
     pub fn offset(&self) -> f32 {
         f32::from_bits(self.offset_db.load(Ordering::Relaxed))
+    }
+
+    /// Install the RNNoise engine. Called once at startup.
+    pub fn set_engine(&self, engine: Box<dyn DenoiseEngine>) {
+        *self
+            .engine
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(engine);
+    }
+
+    /// Apply administrator-configured denoise settings. Changing either value
+    /// restarts the 30 s measurement window so levels never mix pre/post
+    /// configurations, and the evidence ring only holds one configuration.
+    pub fn set_denoise(&self, mode: u8, voice_enhance: bool) {
+        let mode = mode.min(DENOISE_STRONG);
+        let changed = self.denoise_mode.swap(mode, Ordering::SeqCst) != mode
+            || self.voice_enhance.swap(voice_enhance, Ordering::SeqCst) != voice_enhance;
+        if changed {
+            if let Some(engine) = self
+                .engine
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_mut()
+            {
+                engine.set_config(mode, voice_enhance);
+            }
+            self.reset_window_and_ring();
+        }
+    }
+
+    #[allow(dead_code)] // surfaced through Tauri status in a later revision
+    pub fn denoise_mode(&self) -> u8 {
+        self.denoise_mode.load(Ordering::Relaxed)
+    }
+
+    #[allow(dead_code)]
+    pub fn voice_enhance(&self) -> bool {
+        self.voice_enhance.load(Ordering::Relaxed)
     }
 
     pub fn set_capturing(&self, capturing: bool) {
@@ -229,11 +292,20 @@ impl AudioShared {
     }
 
     fn reset_window_and_ring(&self) {
-        // Keep lock ordering consistent with push_block: denoiser, ring, window.
+        // Keep lock ordering consistent with push_block: denoiser, engine,
+        // ring, window.
         *self
             .denoiser
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Denoiser::new();
+        if let Some(engine) = self
+            .engine
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_mut()
+        {
+            engine.reset();
+        }
         self.ring
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -278,16 +350,23 @@ impl AudioShared {
         let mut sum_sq = 0.0_f64;
         let mut peak = 0.0_f32;
         let limit = self.ring_limit.load(Ordering::Relaxed).max(1);
+        let denoise_mode = self.denoise_mode.load(Ordering::Relaxed);
         {
             let mut denoiser = self
                 .denoiser
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             denoiser.configure(sample_rate);
+            let mut engine = self
+                .engine
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let mut ring = self
                 .ring
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+            let mut mono: Vec<f32> = Vec::with_capacity(samples.len() / channels.max(1));
             for frame in samples.chunks_exact(channels) {
                 let sample = if channels == 1 {
                     frame[0]
@@ -295,14 +374,38 @@ impl AudioShared {
                     frame.iter().copied().sum::<f32>() / channels as f32
                 };
                 let value = if sample.is_finite() { sample } else { 0.0 };
-                let filtered = denoiser.filter.process(value);
+                mono.push(denoiser.filter.process(value));
+            }
+
+            // AI denoise stage (RNNoise via nnnoiseless). When off — or before
+            // the engine has been installed — the high-pass filtered signal is
+            // used directly.
+            let mut denoised: Vec<f32>;
+            let processed: &[f32] = if denoise_mode != DENOISE_OFF {
+                match engine.as_mut() {
+                    Some(engine) => {
+                        denoised = Vec::with_capacity(mono.len());
+                        engine.process(&mono, &mut denoised);
+                        if denoised.len() == mono.len() {
+                            &denoised
+                        } else {
+                            &mono
+                        }
+                    }
+                    None => &mono,
+                }
+            } else {
+                &mono
+            };
+
+            for &filtered in processed.iter() {
                 sum_sq += (filtered as f64) * (filtered as f64);
                 peak = peak.max(filtered.abs());
                 if ring.samples.len() >= limit {
                     ring.samples.pop_front();
                 }
-                // Evidence keeps the high-pass filtered signal so the full
-                // 30-second interval remains audible without DC/rumble.
+                // Evidence matches what the meter measures: high-passed, and
+                // AI-denoised when the administrator enabled it.
                 ring.samples.push_back(filtered);
             }
         }

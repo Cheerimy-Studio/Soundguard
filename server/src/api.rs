@@ -1828,6 +1828,8 @@ async fn device_heartbeat(
         notification_enabled: settings.notification_enabled,
         notification_title: settings.notification_title,
         notification_content: settings.notification_content,
+        denoise_mode: settings.denoise_mode,
+        voice_enhance: settings.voice_enhance,
     }))
 }
 

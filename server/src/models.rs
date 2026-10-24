@@ -27,6 +27,16 @@ pub struct Settings {
     pub notification_title: String,
     #[serde(default)]
     pub notification_content: String,
+    /// AI 降噪模式：off / light / standard / strong（RNNoise）。
+    #[serde(default = "default_denoise_mode")]
+    pub denoise_mode: String,
+    /// 人声增强：降噪后对语音频段做临场感提升。
+    #[serde(default)]
+    pub voice_enhance: bool,
+}
+
+fn default_denoise_mode() -> String {
+    "off".to_string()
 }
 
 impl Settings {
@@ -72,6 +82,13 @@ impl Settings {
             return Err("收件人数量不能超过 20 个".to_string());
         }
         self.threshold_db = (self.threshold_db * 10.0).round() / 10.0;
+        self.denoise_mode = self.denoise_mode.trim().to_ascii_lowercase();
+        if !matches!(
+            self.denoise_mode.as_str(),
+            "off" | "light" | "standard" | "strong"
+        ) {
+            return Err("降噪模式必须为 off / light / standard / strong".to_string());
+        }
         self.notification_title = self.notification_title.trim().chars().take(80).collect();
         self.notification_content = self
             .notification_content
@@ -686,6 +703,8 @@ pub struct HeartbeatResponse {
     pub notification_enabled: bool,
     pub notification_title: String,
     pub notification_content: String,
+    pub denoise_mode: String,
+    pub voice_enhance: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
