@@ -2195,3 +2195,12 @@ input[type="range"]::-webkit-slider-thumb {
 .global-summary strong {
   color: var(--text) !important;
 }
+
+.dash-db.is-warning-15s,
+.dash-db.is-warning-15s strong {
+  color: #b45309 !important;
+}
+
+.rolling-warn {
+  color: #b45309;
+}

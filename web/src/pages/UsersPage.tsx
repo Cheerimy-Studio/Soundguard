@@ -279,7 +279,8 @@ export function UsersPage({ devices, currentUser, onNotify }: UsersPageProps) {
                 value={form.role}
                 onChange={(event) => setForm({ ...form, role: event.target.value as UserRole })}
               >
-                <option value="device_admin">设备管理员</option>
+                <option value="update_admin">更新管理员</option>
+              <option value="device_admin">设备管理员</option>
                 <option value="super_admin">超级管理员</option>
               </select>
             </label>

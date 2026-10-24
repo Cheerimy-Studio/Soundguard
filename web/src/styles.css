@@ -5472,3 +5472,16 @@ input[type="range"]:disabled {
   font-size: 14px;
   font-weight: 650;
 }
+
+.dash-db.is-warning-15s {
+  color: #d97706 !important;
+}
+
+.dash-db.is-warning-15s strong {
+  color: #d97706 !important;
+}
+
+.rolling-warn {
+  color: #d97706;
+  font-weight: 600;
+}

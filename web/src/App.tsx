@@ -305,6 +305,7 @@ export default function App() {
               ...live.device,
               currentDb: live.currentDb,
               liveAvgDb: live.averageDb,
+              liveRolling15sDb: live.rolling15sDb ?? null,
               peakDb: live.peakDb ?? previous.device.peakDb,
               liveSuspended: live.suspended,
               liveSystemPlaying: live.systemPlaying,
@@ -780,6 +781,7 @@ export default function App() {
           <div className="nav-section-label">监测控制台</div>
           {NAV_ITEMS.filter((item) =>
             currentUser?.role === "super_admin"
+              || currentUser?.role === "update_admin"
               || (item.key !== "devices" && item.key !== "users"),
           ).map((item) => {
             const Icon = item.icon;
@@ -932,7 +934,7 @@ export default function App() {
               onNotify={notify}
             />
           )}
-          {page === "settings" && (
+          {page === "settings" && currentUser?.role === "super_admin" && (
             <SettingsPage
               overview={overview}
               deviceId={overview.device.id}
@@ -941,7 +943,7 @@ export default function App() {
               onNotify={notify}
             />
           )}
-          {page === "users" && currentUser?.role === "super_admin" && (
+          {page === "users" && (currentUser?.role === "super_admin" || currentUser?.role === "update_admin") && (
             <UsersPage
               devices={overview.devices}
               currentUser={currentUser}
@@ -953,6 +955,7 @@ export default function App() {
         <nav className="mobile-nav">
           {NAV_ITEMS.filter((item) =>
             currentUser?.role === "super_admin"
+              || currentUser?.role === "update_admin"
               || (item.key !== "devices" && item.key !== "users"),
           ).map((item) => {
             const Icon = item.icon;

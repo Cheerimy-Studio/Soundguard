@@ -330,6 +330,10 @@
             <input type="text" id="device-id-input" placeholder="设备编号" required />
           </label>
           <label class="field">
+        <span>告警提示音音量</span>
+        <input type="range" id="alert-volume" min="0" max="100" value="22" step="5">
+      </label>
+      <label class="field">
             <span>设备令牌</span>
             <div class="secret-field">
               <input type="password" id="device-token-input" placeholder="设备令牌" required />

@@ -57,11 +57,25 @@ impl Admin {
         self.user.is_super()
     }
 
+    pub fn is_update_admin(&self) -> bool {
+        self.user.role.is_update_admin()
+    }
+
     pub fn require_super(&self) -> Result<(), AppError> {
         if self.is_super() {
             Ok(())
         } else {
             Err(AppError::forbidden("只有超级管理员可以执行此操作"))
+        }
+    }
+
+    /// UpdateAdmin + SuperAdmin: device management, user management,
+    /// settings — everything except server secrets and updates.
+    pub fn require_update_admin(&self) -> Result<(), AppError> {
+        if self.is_update_admin() {
+            Ok(())
+        } else {
+            Err(AppError::forbidden("需要更新管理员或超级管理员权限"))
         }
     }
 
@@ -157,6 +171,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/alerts/{id}/evidence/denoise", post(denoise_evidence))
         .route("/alerts/{id}/evidence/denoised", get(get_denoised_evidence))
         .route("/settings/nvidia-key", put(set_nvidia_key).get(get_nvidia_key))
+        .route("/update/check", get(check_update))
+        .route("/update/apply", post(apply_update))
         .route("/settings", get(get_settings).put(update_settings))
         .route("/device/control", post(control_device))
         .route("/reports/send", post(send_report))
@@ -497,7 +513,7 @@ async fn list_users(
     admin: Admin,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<UserView>>, AppError> {
-    admin.require_super()?;
+    admin.require_update_admin()?;
     let snapshot = state.store.snapshot().await;
     Ok(Json(snapshot.users.iter().map(User::view).collect()))
 }
@@ -859,7 +875,7 @@ async fn create_device(
     State(state): State<AppState>,
     Json(request): Json<CreateDeviceRequest>,
 ) -> Result<Json<CreateDeviceResponse>, AppError> {
-    admin.require_super()?;
+    admin.require_update_admin()?;
     let snapshot = state.store.snapshot().await;
     let name = validate_device_name(&snapshot.devices, &request.name, None)?;
     let device_id = match request.device_id {
@@ -932,7 +948,7 @@ async fn update_device(
     Path(id): Path<String>,
     Json(request): Json<UpdateDeviceRequest>,
 ) -> Result<Json<DeviceView>, AppError> {
-    admin.require_super()?;
+    admin.require_update_admin()?;
     let snapshot = state.store.snapshot().await;
     if find_device(&snapshot, &id).is_none() {
         return Err(AppError::not_found("设备不存在"));
@@ -995,7 +1011,7 @@ async fn delete_device(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    admin.require_super()?;
+    admin.require_update_admin()?;
     let removed = state
         .store
         .mutate(|state| {
@@ -1035,7 +1051,7 @@ async fn rotate_device_token(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<DeviceTokenResponse>, AppError> {
-    admin.require_super()?;
+    admin.require_update_admin()?;
     let token = new_device_token();
     let token_hash = hash_token(&token);
     let found = state
@@ -1905,6 +1921,7 @@ async fn device_live(
             "deviceId": request.device_id,
             "currentDb": view.current_db,
             "averageDb": request.average_db.map(round1),
+            "rolling15sDb": request.rolling_15s_db.map(round1),
             "peakDb": request.peak_db.map(round1),
             "capturing": request.capturing,
             "suspended": request.suspended,
@@ -2258,6 +2275,7 @@ async fn record_authorized_stop(
             target.last_stop_at = Some(now);
             target.current_db = None;
             target.live_avg_db = None;
+            target.live_rolling_15s_db = None;
             target.offline_alert_active = false;
             target.stop_failures = 0;
             target.stop_locked_until = None;
@@ -2533,6 +2551,57 @@ async fn device_call_audio(
 struct WsQuery {
     token: String,
     device_id: Option<String>,
+}
+
+
+async fn check_update(
+    admin: Admin,
+) -> Result<Json<crate::update::UpdateCheck>, AppError> {
+    admin.require_update_admin()?;
+    let result = crate::update::check_github()
+        .await
+        .map_err(|e| AppError::new(StatusCode::BAD_GATEWAY, e))?;
+    Ok(Json(result))
+}
+
+async fn apply_update(
+    admin: Admin,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    admin.require_super()?;
+    let check = crate::update::check_github()
+        .await
+        .map_err(|e| AppError::new(StatusCode::BAD_GATEWAY, e))?;
+    if !check.update_available {
+        return Ok(Json(serde_json::json!({
+            "ok": false,
+            "message": "当前已是最新版本",
+        })));
+    }
+
+    #[cfg(unix)]
+    let asset_url = &check.download_urls.linux_x86_64;
+    #[cfg(windows)]
+    let asset_url = &check.download_urls.windows_server;
+
+    crate::update::apply_update(asset_url)
+        .await
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    // Schedule a graceful shutdown so systemd / the service manager restarts
+    // us with the new binary.
+    let config = state.config.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        tracing::info!("Update applied; restarting server (port {})", config.port);
+        std::process::exit(0);
+    });
+
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "message": "更新完成，服务即将重启",
+        "newVersion": check.latest_version,
+    })))
 }
 
 async fn admin_ws(

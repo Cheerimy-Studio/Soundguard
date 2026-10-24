@@ -499,7 +499,7 @@ mod tests {
             daily_report_enabled: true,
             daily_report_time: "08:00".to_string(),
             offline_timeout_secs: 45,
-            alert_cooldown_secs: 300,
+            alert_cooldown_secs: 120,
             evidence_seconds: 30,
             auto_record_evidence: true,
             retention_days: 30,

@@ -20,7 +20,7 @@ export interface NvidiaKeyState {
   masked: string;
 }
 
-export type UserRole = "super_admin" | "device_admin";
+export type UserRole = "super_admin" | "update_admin" | "device_admin";
 
 export interface User {
   id: string;
@@ -51,6 +51,7 @@ export interface Device {
   appVersion: string | null;
   captureError: string | null;
   liveAvgDb: number | null;
+  liveRolling15sDb: number | null;
   liveSuspended: boolean;
   liveSystemPlaying: boolean;
   liveAecEnabled: boolean;
@@ -207,6 +208,7 @@ export interface LiveData {
   deviceId: string;
   currentDb: number | null;
   averageDb: number | null;
+  rolling15sDb?: number | null;
   peakDb: number | null;
   capturing: boolean;
   suspended: boolean;
@@ -273,4 +275,17 @@ export interface UpdateUserPayload {
   role?: UserRole;
   deviceIds?: string[];
   disabled?: boolean;
+}
+
+export interface UpdateCheck {
+  currentVersion: string;
+  latestVersion: string;
+  updateAvailable: boolean;
+  releaseUrl: string;
+  releaseNotes: string;
+  publishedAt: string;
+  downloadUrls: {
+    linuxX86_64: string;
+    windowsServer: string;
+  };
 }

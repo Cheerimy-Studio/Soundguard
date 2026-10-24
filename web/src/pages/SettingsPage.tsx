@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   AudioWaveform,
   CloudCog,
+  Download,
   BellRing,
   CheckCircle2,
   Clock3,
@@ -13,6 +14,7 @@ import {
   Megaphone,
   Mic2,
   RotateCcw,
+  RefreshCw,
   Save,
   Send,
   ShieldAlert,
@@ -26,7 +28,7 @@ import {
   formatDb,
   formatFullDateTime,
 } from "../lib/format";
-import type { DeviceSettings, EmailStatus, Overview, Settings } from "../types";
+import type { DeviceSettings, EmailStatus, Overview, Settings, UpdateCheck } from "../types";
 
 interface SettingsPageProps {
   overview: Overview;
@@ -97,6 +99,10 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
   const [nvidiaMasked, setNvidiaMasked] = useState("");
   const [nvidiaInput, setNvidiaInput] = useState("");
   const [nvidiaSaving, setNvidiaSaving] = useState(false);
+  const [updateCheck, setUpdateCheck] = useState<UpdateCheck | null>(null);
+  const [updateLoading, setUpdateLoading] = useState(false);
+  const [updateApplying, setUpdateApplying] = useState(false);
+  const [updateMessage, setUpdateMessage] = useState("");
   const [alertEmails, setAlertEmails] = useState(overview.settings.alertRecipients.join(", "));
   const [reportEmails, setReportEmails] = useState(overview.settings.reportRecipients.join(", "));
   const [saving, setSaving] = useState(false);
@@ -224,6 +230,41 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
       onNotify(error instanceof Error ? error.message : "设备策略保存失败", "error");
     } finally {
       setPolicySaving(false);
+    }
+  }
+
+  async function checkForUpdate() {
+    if (updateLoading) return;
+    setUpdateLoading(true);
+    setUpdateMessage("");
+    try {
+      const result = await api.updateCheck();
+      setUpdateCheck(result);
+      if (!result.updateAvailable) {
+        setUpdateMessage(`当前已是最新版本 v${result.currentVersion}`);
+      }
+    } catch (error) {
+      setUpdateMessage(error instanceof Error ? error.message : "检查更新失败");
+    } finally {
+      setUpdateLoading(false);
+    }
+  }
+
+  async function applyServerUpdate() {
+    if (updateApplying || !updateCheck) return;
+    setUpdateApplying(true);
+    setUpdateMessage("正在下载并应用更新…");
+    try {
+      const result = await api.applyUpdate();
+      if (result.ok) {
+        setUpdateMessage(`已更新到 v${result.newVersion}，服务端正在重启，请稍后刷新页面`);
+      } else {
+        setUpdateMessage(result.message || "当前已是最新版本");
+      }
+    } catch (error) {
+      setUpdateMessage(error instanceof Error ? error.message : "更新失败");
+    } finally {
+      setUpdateApplying(false);
     }
   }
 
@@ -825,6 +866,49 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
             </div>
             <div className="inline-note">
               云端调用失败会自动重试 3 次；降噪结果缓存在本地服务端（加密存储），重复试听不再计费。
+            </div>
+          </section>
+
+          <section className="panel settings-card">
+            <div className="settings-card-head">
+              <div className="settings-icon emerald"><RefreshCw size={18} /></div>
+              <div>
+                <h3>软件更新</h3>
+                <p>从 GitHub Release 检查并安装服务端更新。更新完成后服务端会自动重启，管理端请刷新页面。</p>
+              </div>
+            </div>
+            {updateCheck && (
+              <div className="field-grid">
+                <div className="form-field static-field">
+                  <span>当前版本</span>
+                  <div className="static-value"><code>v{updateCheck.currentVersion}</code></div>
+                </div>
+                <div className="form-field static-field">
+                  <span>最新版本</span>
+                  <div className="static-value">
+                    <code>v{updateCheck.latestVersion}</code>
+                    {updateCheck.updateAvailable && <span className="badge warn">有更新</span>}
+                  </div>
+                </div>
+              </div>
+            )}
+            {updateMessage && <div className="inline-note">{updateMessage}</div>}
+            <div className="mail-actions">
+              <button type="button" className="ghost-button" onClick={() => void checkForUpdate()} disabled={updateLoading}>
+                {updateLoading ? <LoaderCircle size={14} className="spin" /> : <RefreshCw size={14} />}
+                检查更新
+              </button>
+              {updateCheck?.updateAvailable && (
+                <button type="button" className="primary-button" onClick={() => void applyServerUpdate()} disabled={updateApplying}>
+                  {updateApplying ? <LoaderCircle size={14} className="spin" /> : <Download size={14} />}
+                  {updateApplying ? "正在更新…" : "一键更新"}
+                </button>
+              )}
+              {updateCheck?.updateAvailable && updateCheck.releaseUrl && (
+                <a href={updateCheck.releaseUrl} target="_blank" rel="noopener noreferrer" className="ghost-button small" style={{ textDecoration: "none" }}>
+                  查看发布说明
+                </a>
+              )}
             </div>
           </section>
 

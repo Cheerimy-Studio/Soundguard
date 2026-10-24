@@ -186,6 +186,8 @@ pub struct Device {
     #[serde(default)]
     pub live_avg_db: Option<f64>,
     #[serde(default)]
+    pub live_rolling_15s_db: Option<f64>,
+    #[serde(default)]
     pub live_suspended: bool,
     #[serde(default)]
     pub live_system_playing: bool,
@@ -218,6 +220,7 @@ impl Device {
             app_version: None,
             capture_error: None,
             live_avg_db: None,
+            live_rolling_15s_db: None,
             live_suspended: false,
             live_system_playing: false,
             live_aec_enabled: false,
@@ -278,6 +281,9 @@ impl Device {
             app_version: self.app_version.clone(),
             capture_error: self.capture_error.clone(),
             live_avg_db: has_measurement.then_some(self.live_avg_db).flatten(),
+            live_rolling_15s_db: has_measurement
+                .then_some(self.live_rolling_15s_db)
+                .flatten(),
             live_suspended: self.live_suspended,
             live_system_playing: self.live_system_playing,
             live_aec_enabled: self.live_aec_enabled,
@@ -339,6 +345,8 @@ pub struct DeviceView {
     pub app_version: Option<String>,
     pub capture_error: Option<String>,
     pub live_avg_db: Option<f64>,
+    #[serde(default)]
+    pub live_rolling_15s_db: Option<f64>,
     pub live_suspended: bool,
     pub live_system_playing: bool,
     pub live_aec_enabled: bool,
@@ -454,6 +462,10 @@ impl CallRecord {
 #[serde(rename_all = "snake_case")]
 pub enum UserRole {
     SuperAdmin,
+    /// Senior operator: can manage devices, users, settings, and evidence
+    /// review — everything except server-sensitive operations (API keys,
+    /// GitHub updates, retention policy).
+    UpdateAdmin,
     DeviceAdmin,
 }
 
@@ -461,12 +473,18 @@ impl UserRole {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::SuperAdmin => "super_admin",
+            Self::UpdateAdmin => "update_admin",
             Self::DeviceAdmin => "device_admin",
         }
     }
 
     pub fn is_super(&self) -> bool {
         matches!(self, Self::SuperAdmin)
+    }
+
+    /// UpdateAdmin and SuperAdmin can manage devices, users, and settings.
+    pub fn is_update_admin(&self) -> bool {
+        matches!(self, Self::SuperAdmin | Self::UpdateAdmin)
     }
 }
 
@@ -748,6 +766,8 @@ pub struct LiveRequest {
     pub average_db: Option<f64>,
     #[serde(default)]
     pub peak_db: Option<f64>,
+    #[serde(default)]
+    pub rolling_15s_db: Option<f64>,
     #[serde(default)]
     pub capturing: bool,
     #[serde(default)]

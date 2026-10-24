@@ -35,6 +35,9 @@ pub struct MeterSnapshot {
     pub current_db: Option<f64>,
     pub average_db: Option<f64>,
     pub peak_db: Option<f64>,
+    /// Live 15-second rolling Leq. Used for the yellow early-warning level;
+    /// the 30 s settlement window drives the official red alert.
+    pub rolling_15s_db: Option<f64>,
     pub progress: f32,
     pub capturing: bool,
     pub suspended: bool,
@@ -137,6 +140,59 @@ impl Accumulator {
     }
 }
 
+/// Tracks energy over a rolling time span using exponentially-spaced block
+/// accumulators. Each block covers ~1 s of audio so the 15 s window stays
+/// accurate to ±1 s without a full sample ring.
+struct RollingEnergy {
+    blocks: VecDeque<(Instant, f64, u64)>, // (started, sum_sq, frames)
+    total_sum_sq: f64,
+    total_frames: u64,
+    span_secs: f64,
+}
+
+impl RollingEnergy {
+    fn new(span_secs: f64) -> Self {
+        Self {
+            blocks: VecDeque::new(),
+            total_sum_sq: 0.0,
+            total_frames: 0,
+            span_secs,
+        }
+    }
+
+    fn push(&mut self, sum_sq: f64, frames: u64, now: Instant) {
+        self.blocks.push_back((now, sum_sq, frames));
+        self.total_sum_sq += sum_sq;
+        self.total_frames += frames;
+        self.trim(now);
+    }
+
+    fn trim(&mut self, now: Instant) {
+        while let Some(front) = self.blocks.front() {
+            if now.duration_since(front.0).as_secs_f64() > self.span_secs {
+                let (_, sum_sq, frames) = self.blocks.pop_front().unwrap();
+                self.total_sum_sq -= sum_sq;
+                self.total_frames = self.total_frames.saturating_sub(frames);
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn dbfs(&self) -> Option<f64> {
+        if self.total_frames == 0 {
+            return None;
+        }
+        Some(10.0 * (self.total_sum_sq / self.total_frames as f64).max(1e-14).log10())
+    }
+
+    fn reset(&mut self) {
+        self.blocks.clear();
+        self.total_sum_sq = 0.0;
+        self.total_frames = 0;
+    }
+}
+
 struct RingBuffer {
     samples: VecDeque<f32>,
 }
@@ -154,6 +210,8 @@ pub struct AudioShared {
     total_frames: AtomicU64,
     ring_limit: AtomicUsize,
     window: Mutex<Accumulator>,
+    /// Rolling 15 s energy tracker for the early-warning display.
+    rolling_15s: Mutex<RollingEnergy>,
     ring: Mutex<RingBuffer>,
     denoiser: Mutex<Denoiser>,
     denoise_mode: AtomicU8,
@@ -177,6 +235,7 @@ impl AudioShared {
             total_frames: AtomicU64::new(0),
             ring_limit: AtomicUsize::new(0),
             window: Mutex::new(Accumulator::new()),
+            rolling_15s: Mutex::new(RollingEnergy::new(15.0)),
             ring: Mutex::new(RingBuffer {
                 samples: VecDeque::with_capacity(48_000 * 4),
             }),
@@ -311,6 +370,10 @@ impl AudioShared {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .samples
             .clear();
+        self.rolling_15s
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .reset();
         self.window
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -431,6 +494,13 @@ impl AudioShared {
             window.peak = window.peak.max(effective_peak);
             window.min_block_dbfs = window.min_block_dbfs.min(block_dbfs);
         }
+        {
+            let mut rolling = self
+                .rolling_15s
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            rolling.push(effective_sum_sq, frames as u64, Instant::now());
+        }
     }
 
     pub fn snapshot(&self) -> MeterSnapshot {
@@ -459,10 +529,20 @@ impl AudioShared {
         let ignoring_system = !self.aec_enabled() && system_peak > SYSTEM_PLAYBACK_THRESHOLD;
         let audible = capturing && !ignoring_system && has_audio;
 
+        let rolling_15s_dbfs = {
+            let mut rolling = self
+                .rolling_15s
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            rolling.trim(Instant::now());
+            rolling.dbfs()
+        };
         MeterSnapshot {
             current_db: audible.then(|| (instant_dbfs + offset).clamp(0.0, 160.0)),
             average_db: audible.then(|| (average_dbfs + offset).clamp(0.0, 160.0)),
             peak_db: audible.then(|| (peak_dbfs + offset).clamp(0.0, 160.0)),
+            rolling_15s_db: audible
+                .then(|| ((rolling_15s_dbfs.unwrap_or(instant_dbfs)) + offset).clamp(0.0, 160.0)),
             progress: if suspended || ignoring_system {
                 0.0
             } else {

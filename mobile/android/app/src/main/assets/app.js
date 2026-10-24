@@ -563,11 +563,19 @@
     );
     const muted = suspended || ignoringSystem;
     const threshold = Number(state.settings?.thresholdDb ?? 65);
+    const rolling15 = muted ? null : (live ? (live.rolling15sDb ?? null) : (device.liveRolling15sDb ?? null));
     const current = muted ? null : (live ? live.currentDb : device.currentDb);
+    state.rolling15sDb = rolling15;
     const average = muted ? null : (live ? live.averageDb : device.liveAvgDb);
     const peak = muted ? null : (live ? live.peakDb : device.peakDb);
 
     $("currentDb").textContent = number(current);
+    const dbEl = $("currentDb");
+    if (rolling15 !== null && Number(rolling15) >= threshold) {
+      dbEl.style.color = "#d97706";
+    } else {
+      dbEl.style.color = "";
+    }
     $("avgDb").textContent = number(average);
     $("peakDb").textContent = number(peak);
     $("thresholdDb").textContent = number(threshold);

@@ -72,6 +72,7 @@
     deviceTokenInput: $("device-token-input"),
     toggleToken: $("toggle-token"),
     calibrationRange: $("calibration-range"),
+    alertVolume: $("alert-volume"),
     calibrationNumber: $("calibration-number"),
     calibrationValue: $("calibration-value"),
     retryAudio: $("retry-audio"),
@@ -127,6 +128,7 @@
     wsGeneration: 0,
     wsReconnectTimer: null,
     autoAnswer: localStorage.getItem("soundguard.autoAnswer") !== "false",
+    alertVolume: Number(localStorage.getItem("soundguard.alertVolume") || "22"),
     call: null,
     incomingOffer: null,
     incomingTimer: null,
@@ -233,13 +235,14 @@
   // A longer, louder three-tone alarm so an over-limit window is noticed
   // even in a noisy classroom.
   function overLimitAlarm() {
+    const volume = state.alertVolume / 100;
     const pattern = [
       [880, 0, 0.28],
       [880, 0.36, 0.28],
       [880, 0.72, 0.28],
     ];
     for (const [frequency, delay, duration] of pattern) {
-      window.setTimeout(() => beep(frequency, duration, 0.22), delay * 1000);
+      window.setTimeout(() => beep(frequency, duration, volume), delay * 1000);
     }
   }
 
@@ -461,6 +464,7 @@
     const current = suspended || ignoringSystem ? null : meter.currentDb;
     const peak = suspended || ignoringSystem ? null : meter.peakDb;
     const over = average !== null && Number(average) >= threshold;
+  const rollingOver15s = meter.rolling15sDb !== null && Number(meter.rolling15sDb) >= threshold;
 
     els.deviceName.textContent = status?.deviceName || "现场采集节点";
     els.currentDb.textContent = formatDb(current);
@@ -508,6 +512,12 @@
       els.errorBanner.hidden = true;
     }
 
+    const rolling15 = meter.rolling15sDb;
+    if (rolling15 !== null && Number(rolling15) >= threshold) {
+      els.currentDb.classList.add("db-warning-15s");
+    } else {
+      els.currentDb.classList.remove("db-warning-15s");
+    }
     if (over && !suspended && !ignoringSystem && !state.lastOver) {
       state.lastOver = true;
       overLimitAlarm();
@@ -1499,6 +1509,11 @@
       if (event.target === els.closeModal) closeCloseModal();
     });
 
+    els.alertVolume.addEventListener("input", () => {
+      state.alertVolume = Number(els.alertVolume.value);
+      localStorage.setItem("soundguard.alertVolume", String(state.alertVolume));
+    });
+    if (els.alertVolume) els.alertVolume.value = String(state.alertVolume);
     els.autoAnswerToggle.addEventListener("click", toggleAutoAnswer);
     els.acceptCall.addEventListener("click", () => {
       if (state.incomingOffer) void acceptOffer(state.incomingOffer);

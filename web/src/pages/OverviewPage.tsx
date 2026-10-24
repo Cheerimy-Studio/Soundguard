@@ -67,6 +67,8 @@ export function OverviewPage({
     : device.liveAvgDb ?? device.currentDb;
   const peak = device.liveSuspended || ignoringSystem ? null : device.peakDb;
   const over = average !== null && average >= threshold;
+  const rollingOver15s =
+    device.liveRolling15sDb !== null && device.liveRolling15sDb >= threshold;
   const selectedSignaling = signalingConnected;
 
   const chartReadings = useMemo(() => {
@@ -235,12 +237,17 @@ export function OverviewPage({
         </div>
 
         <div className="dash-db-row">
-          <div className={`dash-db ${over ? "is-over" : ""}`}>
+          <div className={`dash-db ${over ? "is-over" : rollingOver15s ? "is-warning-15s" : ""}`}>
             <strong>{formatDb(current)}</strong>
             <span>dB(A)</span>
           </div>
           <div className="dash-side-meta">
             <span>平均 <b>{formatDb(average)} dB</b></span>
+            {device.liveRolling15sDb !== null && (
+              <span className={rollingOver15s ? "rolling-warn" : ""}>
+                15s {formatDb(device.liveRolling15sDb)} dB
+              </span>
+            )}
             <span>峰值 <b>{formatDb(peak)} dB</b></span>
             <span>阈值 <b>{threshold.toFixed(1)} dB</b></span>
           </div>

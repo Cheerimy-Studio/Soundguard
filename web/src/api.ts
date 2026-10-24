@@ -1,5 +1,6 @@
 import type {
   NvidiaKeyState,
+  UpdateCheck,
   Alert,
   CreateUserPayload,
   CallRecord,
@@ -270,6 +271,14 @@ export const api = {
     return requestBlob(
       `/alerts/${encodeURIComponent(id)}/evidence/denoised`,
     );
+  },
+
+  updateCheck(): Promise<UpdateCheck> {
+    return request<UpdateCheck>("/update/check");
+  },
+
+  applyUpdate(): Promise<{ ok: boolean; message: string; newVersion?: string }> {
+    return request("/update/apply", { method: "POST", body: JSON.stringify({}) });
   },
 
   nvidiaKey(): Promise<NvidiaKeyState> {
