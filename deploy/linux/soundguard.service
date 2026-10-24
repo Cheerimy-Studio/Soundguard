@@ -1,0 +1,25 @@
+[Unit]
+Description=SoundGuard environmental noise monitoring and remote intercom
+Documentation=https://github.com/Cheerimy-Studio
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=soundguard
+Group=soundguard
+WorkingDirectory=/opt/soundguard
+EnvironmentFile=-/opt/soundguard/.env
+ExecStart=/opt/soundguard/soundguard-server
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/soundguard/data
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

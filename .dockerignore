@@ -1,0 +1,12 @@
+.git
+.env
+data
+dist
+target
+**/target
+**/node_modules
+web/node_modules
+web/dist
+client
+mobile
+*.log

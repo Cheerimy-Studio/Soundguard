@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f4f6f8" />
+    <title>声垣</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    
+    <div class="consent-modal" id="totp-modal" hidden>
+      <div class="consent-card">
+        <div class="consent-brand">
+          <div class="brand-mark">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round">
+              <path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 10v4" />
+            </svg>
+          </div>
+          <div>
+            <strong>声垣</strong>
+            <span>安全验证</span>
+          </div>
+        </div>
+        <p class="setup-copy">输入动态验证码或固定密码以继续操作。</p>
+        <div class="totp-display" id="totp-display">------</div>
+        <p class="totp-hint">每 30 秒自动刷新</p>
+        <label class="field">
+          <span>验证码</span>
+          <input type="text" id="totp-input" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="off" />
+        </label>
+        <div class="form-error" id="totp-error" hidden></div>
+        <div class="consent-actions">
+          <button type="button" class="ghost-button" id="totp-cancel">取消</button>
+          <button type="button" class="primary-button" id="totp-confirm">验证</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="consent-modal" id="consent-modal" hidden>
+      <div class="consent-card">
+        <div class="consent-brand">
+          <div class="brand-mark">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round">
+              <path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 10v4" />
+            </svg>
+          </div>
+          <div>
+            <strong>声垣</strong>
+            <span>使用须知</span>
+          </div>
+        </div>
+        <ol class="consent-list">
+          <li>
+            <strong>通知与邮件</strong>
+            <span>开启后，声垣会向你推送超标通知，并向管理员设置的邮箱发送告警邮件。</span>
+          </li>
+          <li>
+            <strong>录音保存</strong>
+            <span>声音超过阈值时，声垣会保存该时段前后共 30 秒的现场录音，供管理员在后台回放和取证。</span>
+          </li>
+          <li>
+            <strong>责任说明</strong>
+            <span>声垣仅提供声音监测数据，测量结果仅供参考，不作为任何处理决定的唯一依据。因现场环境、设备故障或使用不当造成的后果，由使用方自行承担。声垣保留对本须知及产品功能的最终解释权。</span>
+          </li>
+        </ol>
+        <div class="consent-actions">
+          <button type="button" class="ghost-button" id="consent-exit">退出</button>
+          <button type="button" class="primary-button" id="consent-accept">同意并继续</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="setup-screen" id="setup-screen" hidden>
+      <div class="setup-card">
+        <div class="setup-brand">
+          <div class="brand-mark">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round">
+              <path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 10v4" />
+            </svg>
+          </div>
+          <div>
+            <strong>声垣</strong>
+            <span>首次配置</span>
+          </div>
+        </div>
+        <h1>连接声环境监测</h1>
+        <p class="setup-copy">
+          填写管理端生成的设备信息，并设置一个只能在本机使用的管理密码。完成后即可开始监测。
+        </p>
+        <form id="setup-form">
+          <label class="field">
+            <span>服务器地址</span>
+            <input type="url" id="setup-server-url" placeholder="https://db.gzmath.cn" required />
+          </label>
+          <label class="field">
+            <span>设备编号</span>
+            <input type="text" id="setup-device-id" placeholder="管理端设备连接页面生成" required />
+          </label>
+          <label class="field">
+            <span>设备令牌</span>
+            <input type="password" id="setup-device-token" placeholder="管理端生成的一次性令牌" required />
+          </label>
+          <div class="setup-grid">
+            <label class="field">
+              <span>本地密码</span>
+              <input type="password" id="setup-password" placeholder="8–128 个字符" minlength="8" maxlength="128" required />
+            </label>
+            <label class="field">
+              <span>确认密码</span>
+              <input type="password" id="setup-confirm-password" placeholder="再次输入" minlength="8" maxlength="128" required />
+            </label>
+          </div>
+          <p class="setup-help">
+            本地密码用于打开设置、关闭自动接听和关闭客户端，只保存在本机。
+          </p>
+          <div class="form-error" id="setup-error" hidden></div>
+          <button type="submit" class="primary-button setup-submit" id="setup-submit">保存并开始监测</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="app-shell" id="app-shell">
+      <header class="app-header">
+        <div class="brand">
+          <div class="brand-mark">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round">
+              <path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 10v4" />
+            </svg>
+          </div>
+          <div class="brand-name">声垣</div>
+        </div>
+
+        <div class="header-right">
+          <div class="connection-pill" id="connection-pill">
+            <span class="dot"></span>
+            <span id="connection-text">正在连接</span>
+          </div>
+          <span class="app-version">声垣 V0.1.0</span>
+          <button type="button" class="icon-button" id="settings-button" title="设置" aria-label="设置">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" />
+            </svg>
+          </button>
+          <button type="button" class="icon-button close" id="exit-button" title="关闭" aria-label="关闭">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="card monitor-card">
+          <div class="monitor-head">
+            <h1 id="device-name">现场采集节点</h1>
+            <span class="state-badge" id="meter-state">
+              <span class="dot"></span>
+              <span id="meter-state-text">启动中</span>
+            </span>
+          </div>
+
+          <div class="db-block">
+            <div class="big-db">
+              <span id="current-db">--</span>
+              <span class="unit">dB(A)</span>
+            </div>
+            <div class="db-caption">瞬时声压</div>
+            <div class="level-scale">
+              <div class="level-track">
+                <div class="level-fill" id="level-fill"></div>
+                <div class="level-threshold" id="level-threshold"></div>
+              </div>
+              <div class="scale-labels">
+                <span>30</span><span>50</span><span>70</span><span>90</span><span>110</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="metric-grid">
+            <div class="metric primary">
+              <span>平均</span>
+              <strong><b id="average-db">--</b><em>dB</em></strong>
+            </div>
+            <div class="metric">
+              <span>峰值</span>
+              <strong><b id="peak-db">--</b><em>dB</em></strong>
+            </div>
+            <div class="metric">
+              <span>阈值</span>
+              <strong><b id="threshold-db">65.0</b><em>dB</em></strong>
+            </div>
+            <div class="metric">
+              <span>下次上报</span>
+              <strong><b id="next-report">--</b><em>s</em></strong>
+            </div>
+          </div>
+
+          <div class="notice danger" id="noise-banner" hidden>
+            <div class="notice-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
+                <path d="M12 9v4M12 17h.01" />
+              </svg>
+            </div>
+            <div class="notice-copy">
+              <strong id="noise-title">环境声音超标</strong>
+              <p id="noise-text">当前环境声音超过设定阈值。</p>
+            </div>
+          </div>
+
+          <div class="notice warning" id="error-banner" hidden>
+            <div class="notice-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 8v5M12 16h.01" />
+              </svg>
+            </div>
+            <div class="notice-copy">
+              <strong>麦克风异常</strong>
+              <p id="error-text">请检查系统麦克风权限或设备连接。</p>
+            </div>
+            <button type="button" class="small-button" id="error-retry">重试</button>
+          </div>
+
+          <section class="chart-box">
+            <div class="chart-head">
+              <div>
+                <h2>声压波形</h2>
+              </div>
+              <div class="chart-legend">
+                <span class="legend-item"><i class="legend-line instant"></i>瞬时</span>
+                <span class="legend-item"><i class="legend-line average"></i>平均</span>
+                <span class="legend-item"><i class="legend-line threshold"></i>阈值</span>
+              </div>
+            </div>
+            <canvas id="wave-canvas"></canvas>
+          </section>
+
+          <div class="record-window">
+            <div class="record-head">
+              <span>录制窗口</span>
+              <span id="window-hint">--</span>
+            </div>
+            <div class="progress-track"><div class="progress-fill" id="window-fill"></div></div>
+          </div>
+        </section>
+
+        <aside class="side-column">
+          <section class="card notice-card" id="notification-card">
+            <div class="side-head">
+              <h2>通知</h2>
+            </div>
+            <strong id="notification-title">暂无通知</strong>
+            <p class="muted" id="notification-content"></p>
+          </section>
+
+          <section class="card calls-card">
+            <div class="side-head">
+              <div>
+                <h2>通话记录</h2>
+                <p>管理端对讲与广播回放</p>
+              </div>
+              <button type="button" class="icon-button ghost" id="refresh-calls" title="刷新通话记录" aria-label="刷新通话记录">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5" />
+                </svg>
+              </button>
+            </div>
+            <div class="call-records" id="call-records">
+              <div class="empty-calls">正在读取通话记录…</div>
+            </div>
+            <audio id="call-audio" controls hidden></audio>
+          </section>
+
+          <section class="card channel-card">
+            <div class="side-head">
+              <h2>远程通话</h2>
+              <span class="signal-pill" id="signal-state">未连接</span>
+            </div>
+            <p class="channel-title" id="intercom-title">等待管理端呼叫</p>
+            <p class="muted" id="intercom-desc">管理员可通过管理端发起双向对讲或单向广播。</p>
+            <div class="switch-row">
+              <span>自动接听</span>
+              <button type="button" class="switch is-on" id="auto-answer-toggle" role="switch" aria-checked="true" aria-label="自动接听">
+                <span></span>
+              </button>
+            </div>
+          </section>
+
+          <section class="card connection-card">
+            <div class="side-head">
+              <h2>连接状态</h2>
+              <span class="network-state" id="network-state">
+                <span class="dot"></span>
+                <span id="network-state-text">连接中</span>
+              </span>
+            </div>
+            <div class="conn-row"><span>服务器</span><code id="server-url">--</code></div>
+            <div class="conn-row"><span>设备编号</span><code id="device-id">--</code></div>
+            <div class="conn-row"><span>最后心跳</span><span id="last-heartbeat">--</span></div>
+            <div class="conn-error" id="last-error" hidden></div>
+            <button type="button" class="text-button" id="open-settings">打开客户端设置</button>
+          </section>
+        </aside>
+      </main>
+
+      <footer class="app-footer">
+        <span>© 2026 Cheerimy Studio</span>
+        <div>
+          <button type="button" class="footer-link" id="github-button">GitHub</button>
+          <span class="footer-version">声垣 V0.1.0</span>
+        </div>
+      </footer>
+    </div>
+
+    <audio id="remote-audio" autoplay playsinline></audio>
+
+    <div class="overlay" id="settings-auth-modal" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settings-auth-title">
+        <div class="modal-icon lock">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+            <rect x="4" y="11" width="16" height="10" rx="2" />
+            <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+          </svg>
+        </div>
+        <h2 id="settings-auth-title">管理员验证</h2>
+        <p class="modal-copy" id="settings-auth-copy">请输入本地密码以继续。</p>
+        <label class="field">
+          <span>密码</span>
+          <input type="password" id="settings-pin" placeholder="请输入密码" autocomplete="off" />
+        </label>
+        <div class="modal-error" id="settings-auth-error" hidden></div>
+        <div class="modal-actions">
+          <button type="button" class="ghost-button" id="settings-auth-cancel">取消</button>
+          <button type="button" class="primary-button" id="settings-auth-confirm">验证</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="overlay" id="settings-backdrop" hidden></div>
+    <aside class="drawer" id="settings-drawer" hidden aria-label="客户端设置">
+      <header class="drawer-head">
+        <h2>客户端设置</h2>
+        <button type="button" class="icon-button ghost" id="settings-close" aria-label="关闭设置">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12" /></svg>
+        </button>
+      </header>
+      <form id="settings-form" class="settings-form">
+        <section class="form-section">
+          <h3>服务器与设备</h3>
+          <label class="field">
+            <span>服务器地址</span>
+            <input type="url" id="server-url-input" placeholder="https://db.gzmath.cn" required />
+          </label>
+          <label class="field">
+            <span>设备编号</span>
+            <input type="text" id="device-id-input" placeholder="设备编号" required />
+          </label>
+          <label class="field">
+        <span>告警提示音音量</span>
+        <input type="range" id="alert-volume" min="0" max="100" value="22" step="5">
+      </label>
+      <label class="field">
+            <span>设备令牌</span>
+            <div class="secret-field">
+              <input type="password" id="device-token-input" placeholder="设备令牌" required />
+              <button type="button" class="plain-button" id="toggle-token">显示</button>
+            </div>
+          </label>
+          <p class="field-help">设备编号与令牌由管理端“设备连接”页面生成。</p>
+        </section>
+
+        <section class="form-section">
+          <h3>麦克风校准</h3>
+          <div class="calibration">
+            <div class="calibration-value"><strong id="calibration-value">90.0</strong><span>dB 偏移</span></div>
+            <div class="calibration-controls">
+              <input type="range" id="calibration-range" min="40" max="140" step="0.5" value="90" />
+              <input type="number" id="calibration-number" min="40" max="140" step="0.5" value="90" />
+            </div>
+          </div>
+          <p class="field-help">用专业声级计对比当前读数，调整偏移直到数值接近。</p>
+          <button type="button" class="ghost-button full-width" id="retry-audio">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5" /></svg>
+            重新初始化麦克风
+          </button>
+        </section>
+
+        <div class="drawer-actions">
+          <button type="button" class="ghost-button" id="settings-cancel">取消</button>
+          <button type="submit" class="primary-button" id="settings-save">保存并重连</button>
+        </div>
+        <div class="form-error" id="settings-error" hidden></div>
+      </form>
+    </aside>
+
+    <div class="overlay" id="close-modal" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="close-modal-title">
+        <div class="modal-icon lock">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+            <rect x="4" y="11" width="16" height="10" rx="2" />
+            <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+          </svg>
+        </div>
+        <h2 id="close-modal-title">关闭声垣</h2>
+        <p class="modal-copy">请输入首次配置时设置的本地密码。服务器在线时会记录关闭审计。</p>
+        <label class="field">
+          <span>密码</span>
+          <input type="password" id="exit-pin" placeholder="请输入密码" autocomplete="off" />
+        </label>
+        <div class="modal-error" id="exit-error" hidden></div>
+        <div class="modal-actions">
+          <button type="button" class="ghost-button" id="cancel-close">取消</button>
+          <button type="button" class="primary-button" id="confirm-close">验证并关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="overlay" id="incoming-modal" hidden>
+      <div class="modal call-modal" role="dialog" aria-modal="true" aria-labelledby="incoming-title">
+        <div class="modal-icon call">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+            <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92Z" />
+          </svg>
+        </div>
+        <h2 id="incoming-title">管理端来电</h2>
+        <p class="modal-copy" id="incoming-desc">是否接听本次远程通话？</p>
+        <div class="modal-actions">
+          <button type="button" class="ghost-button" id="decline-call">拒绝</button>
+          <button type="button" class="primary-button" id="accept-call">接听</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="active-call" id="active-call" hidden>
+      <div class="active-call-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 2v20M8 7v10M16 7v10M4 10v4M20 10v4" />
+        </svg>
+      </div>
+      <div class="active-call-copy">
+        <strong id="call-mode">双向对讲中</strong>
+        <span id="call-timer">00:00</span>
+      </div>
+      <button type="button" class="call-action" id="unlock-audio" hidden>启用声音</button>
+      <button type="button" class="call-action" id="mute-call">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v3" /></svg>
+        <span>静音</span>
+      </button>
+      <button type="button" class="call-action end" id="end-call">结束</button>
+    </div>
+
+    <div class="toast-stack" id="toast-stack"></div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

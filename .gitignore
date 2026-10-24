@@ -1,0 +1,39 @@
+# dependencies / build output
+node_modules/
+server/target/
+client/src-tauri/target/
+client-win7/target/
+client-win7/src-tauri/gen/
+client-win7/src-tauri/webview2-runtime/
+client/src-tauri/gen/
+web/dist/
+
+# runtime data and secrets
+.env
+data/*
+!data/.gitkeep
+*.log
+*.png.tmp
+
+# local tooling
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# TypeScript incremental cache
+*.tsbuildinfo
+
+# Android build output / machine-specific SDK path
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/local.properties
+
+# Android release signing material
+mobile/android/keystore.properties
+mobile/android/keystore/
+
+# release binaries, local backups
+dist/
+backups/

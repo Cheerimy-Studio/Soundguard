@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f4f6f7">
+  <title>声垣</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="consentView" class="consent hidden" role="dialog" aria-modal="true" aria-label="使用须知">
+    <div class="consent-sheet">
+      <div class="consent-head">
+        <div class="brand-symbol" aria-hidden="true">
+          <span></span><span></span><span></span><span></span><span></span>
+        </div>
+        <div>
+          <strong>声垣</strong>
+          <small>使用须知</small>
+        </div>
+      </div>
+      <ol class="consent-list">
+        <li>
+          <strong>通知与邮件</strong>
+          <span>开启后，声垣会向你推送超标通知，并向管理员设置的邮箱发送告警邮件。</span>
+        </li>
+        <li>
+          <strong>录音保存</strong>
+          <span>声音超过阈值时，声垣会保存该时段前后共 30 秒的现场录音，供管理员在后台回放和取证。</span>
+        </li>
+        <li>
+          <strong>责任说明</strong>
+          <span>声垣仅提供声音监测数据，测量结果仅供参考，不作为任何处理决定的唯一依据。因现场环境、设备故障或使用不当造成的后果，由使用方自行承担。声垣保留对本须知及产品功能的最终解释权。</span>
+        </li>
+      </ol>
+      <div class="consent-actions">
+        <button id="consentExitBtn" type="button" class="btn ghost">不同意</button>
+        <button id="consentAcceptBtn" type="button" class="btn primary">同意并继续</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="bootView" class="boot">
+    <div class="brand-symbol" aria-hidden="true">
+      <span></span><span></span><span></span><span></span><span></span>
+    </div>
+    <p>声垣</p>
+    <small>正在连接…</small>
+  </div>
+
+  <div id="loginView" class="login hidden">
+    <div class="login-inner">
+      <div class="brand-symbol big" aria-hidden="true">
+        <span></span><span></span><span></span><span></span><span></span>
+      </div>
+      <h1>声垣</h1>
+      <p class="login-sub">连接学校的声环境监测</p>
+
+      <div id="serverStep">
+        <label class="field">
+          <span>服务器地址</span>
+          <input id="serverInput" type="url" inputmode="url" autocomplete="url"
+                 placeholder="https://db.gzmath.cn" autocapitalize="off" spellcheck="false">
+        </label>
+        <button id="checkServerBtn" class="btn primary block">检测连接</button>
+        <p id="serverStatus" class="server-status" role="status"></p>
+      </div>
+
+      <div id="credentialsStep" class="hidden">
+        <div class="server-confirm">
+          <span id="serverConfirm"></span>
+          <button id="changeServerBtn" type="button" class="text-btn">更改</button>
+        </div>
+        <label class="field">
+          <span>用户名</span>
+          <input id="usernameInput" type="text" autocomplete="username"
+                 placeholder="admin" autocapitalize="off" spellcheck="false" value="admin">
+        </label>
+        <label class="field">
+          <span>密码</span>
+          <input id="passwordInput" type="password" autocomplete="current-password" placeholder="请输入密码">
+        </label>
+        <button id="loginBtn" class="btn primary block">登录</button>
+      </div>
+
+      <p id="loginError" class="form-error" role="alert"></p>
+    </div>
+  </div>
+
+  <div id="appView" class="app hidden">
+    <header class="app-header">
+      <div class="brand">
+        <span id="connDot" class="conn-dot" aria-hidden="true"></span>
+        声垣
+      </div>
+      <select id="deviceSelect" aria-label="选择设备"></select>
+    </header>
+
+    <main class="content">
+      <div id="overBanner" class="over-banner hidden" role="alert">
+        <strong>环境声音超标</strong>
+        <span id="overBannerText">请及时关注现场情况</span>
+      </div>
+
+      <section id="announcementCard" class="card announcement hidden">
+        <div class="row-between">
+          <p class="eyebrow">公告</p>
+          <button id="editNoticeBtn" class="text-btn hidden">编辑</button>
+        </div>
+        <h2 id="announceTitle">暂无公告</h2>
+        <p id="announceContent"></p>
+      </section>
+
+      <section class="card hero">
+        <div class="row-between">
+          <span class="eyebrow">当前声环境</span>
+          <span id="statusBadge" class="badge idle">连接中</span>
+        </div>
+        <div class="db-line">
+          <span id="currentDb" class="db-value">--</span>
+          <span class="db-unit">dB</span>
+        </div>
+        <div class="level">
+          <div id="levelFill" class="level-fill"></div>
+          <div id="thresholdMark" class="threshold-mark" aria-hidden="true"></div>
+        </div>
+        <div class="metrics">
+          <div><span>平均</span><strong id="avgDb">--</strong></div>
+          <div><span>峰值</span><strong id="peakDb">--</strong></div>
+          <div><span>阈值</span><strong id="thresholdDb">--</strong></div>
+          <div><span>今日告警</span><strong id="alertCount">0</strong></div>
+        </div>
+        <div class="actions three">
+          <button id="captureBtn" class="btn primary">暂停采集</button>
+          <button id="callBtn" class="btn ghost">双向对讲</button>
+          <button id="broadcastBtn" class="btn ghost">远程广播</button>
+        </div>
+        <p id="subStatus" class="sub-status">等待实时数据…</p>
+      </section>
+
+      <section class="card chart-card">
+        <div class="row-between">
+          <h2 class="card-title">声压波形</h2>
+          <span id="chartCaption" class="caption">实时</span>
+        </div>
+        <div id="rangeTabs" class="range-tabs" role="tablist">
+          <button class="active" data-minutes="0" role="tab">实时</button>
+          <button data-minutes="1" role="tab">1分钟</button>
+          <button data-minutes="5" role="tab">5分钟</button>
+          <button data-minutes="15" role="tab">15分钟</button>
+          <button data-minutes="30" role="tab">30分钟</button>
+          <button data-minutes="60" role="tab">60分钟</button>
+          <button data-minutes="120" role="tab">120分钟</button>
+          <button data-minutes="180" role="tab">180分钟</button>
+        </div>
+        <canvas id="chart" height="240" aria-label="分贝波形"></canvas>
+        <div class="legend">
+          <span><i class="line current"></i><span id="legendPrimary">当前</span></span>
+          <span><i class="line average"></i><span id="legendSecondary">平均</span></span>
+          <span><i class="line threshold"></i>阈值</span>
+        </div>
+        <div id="overList" class="over-list hidden">
+          <strong>超限时间</strong>
+          <div id="overItems"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="row-between">
+          <h2 class="card-title">录音</h2>
+          <button id="refreshRecords" class="text-btn">刷新</button>
+        </div>
+        <div class="segmented" role="tablist">
+          <button id="tabCalls" class="active" data-tab="calls" role="tab">通话录音</button>
+          <button id="tabAlerts" data-tab="alerts" role="tab">告警录音</button>
+        </div>
+        <div id="recordList" class="record-list">
+          <p class="empty">正在加载…</p>
+        </div>
+        <div id="audioBar" class="audio-bar hidden">
+          <div class="row-between">
+            <strong id="audioTitle">录音播放</strong>
+            <button id="closePlayer" class="text-btn">关闭</button>
+          </div>
+          <audio id="player" controls preload="none"></audio>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="row-between">
+          <h2 class="card-title">后台提醒</h2>
+          <span id="bgState" class="badge idle">检查中</span>
+        </div>
+                <div class="stack-actions">
+          <button id="batteryBtn" class="btn ghost">允许后台运行</button>
+          <button id="notifyBtn" class="btn ghost hidden">开启通知权限</button>
+        </div>
+      </section>
+
+      <button id="logoutBtn" class="logout">退出登录</button>
+      <p class="footer">© 2026 Cheerimy Studio</p>
+    </main>
+  </div>
+
+  <div id="callOverlay" class="call-overlay hidden" role="dialog" aria-modal="true" aria-label="远程通话">
+    <div class="call-panel">
+      <p id="callModeLabel" class="eyebrow">双向对讲</p>
+      <h2 id="callDevice">现场设备</h2>
+      <p id="callState" class="call-state">正在连接现场设备…</p>
+      <div id="callTimer" class="call-timer">00:00</div>
+      <div class="call-actions">
+        <button id="muteBtn" class="btn ghost">静音</button>
+        <button id="hangupBtn" class="btn danger">结束通话</button>
+      </div>
+      <audio id="remoteAudio" autoplay playsinline webkit-playsinline></audio>
+      <button id="unlockCallAudio" class="btn ghost hidden" type="button">启用声音</button>
+    </div>
+  </div>
+
+  <div id="noticeModal" class="modal-shell hidden" role="dialog" aria-modal="true" aria-label="编辑公告">
+    <div class="modal-card">
+      <h2>编辑公告</h2>
+      <label class="check-row">
+        <span>启用公告</span>
+        <input id="noticeEnabled" type="checkbox">
+      </label>
+      <label class="field">
+        <span>标题</span>
+        <input id="noticeTitleInput" type="text" maxlength="80" placeholder="例如：晚自习安静提示">
+      </label>
+      <label class="field">
+        <span>内容</span>
+        <textarea id="noticeContentInput" rows="5" maxlength="2000" placeholder="填写需要在客户端展示的公告内容"></textarea>
+      </label>
+      <p id="noticeError" class="form-error" role="alert"></p>
+      <div class="modal-actions">
+        <button id="noticeCancel" class="btn ghost" type="button">取消</button>
+        <button id="noticeSave" class="btn primary" type="button">保存公告</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
