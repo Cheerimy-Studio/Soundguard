@@ -8,6 +8,35 @@
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
+    
+    <div class="consent-modal" id="totp-modal" hidden>
+      <div class="consent-card">
+        <div class="consent-brand">
+          <div class="brand-mark">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round">
+              <path d="M4 10v4M8 7v10M12 4v16M16 8v8M20 10v4" />
+            </svg>
+          </div>
+          <div>
+            <strong>声垣</strong>
+            <span>安全验证</span>
+          </div>
+        </div>
+        <p class="setup-copy">输入动态验证码或固定密码以继续操作。</p>
+        <div class="totp-display" id="totp-display">------</div>
+        <p class="totp-hint">每 30 秒自动刷新</p>
+        <label class="field">
+          <span>验证码</span>
+          <input type="text" id="totp-input" inputmode="numeric" maxlength="6" placeholder="000000" autocomplete="off" />
+        </label>
+        <div class="form-error" id="totp-error" hidden></div>
+        <div class="consent-actions">
+          <button type="button" class="ghost-button" id="totp-cancel">取消</button>
+          <button type="button" class="primary-button" id="totp-confirm">验证</button>
+        </div>
+      </div>
+    </div>
+
     <div class="consent-modal" id="consent-modal" hidden>
       <div class="consent-card">
         <div class="consent-brand">
