@@ -171,6 +171,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/alerts/{id}/evidence/denoise", post(denoise_evidence))
         .route("/alerts/{id}/evidence/denoised", get(get_denoised_evidence))
         .route("/settings/nvidia-key", put(set_nvidia_key).get(get_nvidia_key))
+        .route("/device/totp", get(device_totp_secret).post(device_totp_verify))
+        .route("/device/war-mode", get(get_war_mode))
+        .route("/war-mode/leaderboard", get(war_leaderboard))
         .route("/update/check", get(check_update))
         .route("/update/apply", post(apply_update))
         .route("/settings", get(get_settings).put(update_settings))
@@ -2007,6 +2010,13 @@ async fn device_heartbeat(
         notification_content: settings.notification_content,
         denoise_mode: settings.denoise_mode,
         voice_enhance: settings.voice_enhance,
+        war_mode_enabled: settings.war_mode_enabled,
+        war_mode_start: settings.war_mode_start.clone(),
+        war_mode_end: settings.war_mode_end.clone(),
+        capture_start: settings.capture_start.clone(),
+        capture_end: settings.capture_end.clone(),
+        totp_secret: device.totp_secret.clone(),
+        has_fixed_password: !settings.fixed_password_hash.is_empty(),
     }))
 }
 
@@ -2602,6 +2612,94 @@ async fn apply_update(
         "message": "更新完成，服务即将重启",
         "newVersion": check.latest_version,
     })))
+}
+
+
+/// Device endpoint: provision the TOTP secret (only sent once per setup).
+async fn device_totp_secret(
+    _credential: DeviceAuth,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let device_id = query.get("deviceId").cloned().unwrap_or_default();
+    let device = authenticate_device_query(&state, headers.get("x-device-token").and_then(|v| v.to_str().ok()).unwrap_or_default(), &device_id).await?;
+    Ok(Json(json!({
+        "totpSecret": device.totp_secret,
+        "hasFixedPassword": !state.store.settings().await.fixed_password_hash.is_empty(),
+    })))
+}
+
+/// Device endpoint: verify a TOTP code or fixed password.
+async fn device_totp_verify(
+    _credential: DeviceAuth,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let device_id = request.get("deviceId").and_then(|v| v.as_str()).unwrap_or_default();
+    let code = request.get("code").and_then(|v| v.as_str()).unwrap_or_default();
+    let device = authenticate_device_query(&state, headers.get("x-device-token").and_then(|v| v.to_str().ok()).unwrap_or_default(), device_id).await?;
+    let settings = state.store.settings().await;
+
+    // Try fixed password first (offline mode)
+    if !settings.fixed_password_hash.is_empty() {
+        if {
+            use argon2::{Argon2, PasswordHash, PasswordVerifier};
+            PasswordHash::new(&settings.fixed_password_hash)
+                .ok()
+                .and_then(|parsed| Argon2::default().verify_password(code.as_bytes(), &parsed).ok())
+                .is_some()
+        } {
+            return Ok(Json(json!({ "verified": true, "method": "password" })));
+        }
+    }
+    // Try TOTP
+    if !device.totp_secret.is_empty() && crate::totp::totp_verify(&device.totp_secret, code) {
+        return Ok(Json(json!({ "verified": true, "method": "totp" })));
+    }
+    Ok(Json(json!({ "verified": false })))
+}
+
+/// Admin endpoint: current war mode state.
+async fn get_war_mode(
+    admin: Admin,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    admin.require_update_admin()?;
+    let settings = state.store.settings().await;
+    Ok(Json(json!({
+        "enabled": settings.war_mode_enabled,
+        "start": settings.war_mode_start,
+        "end": settings.war_mode_end,
+    })))
+}
+
+/// Admin endpoint: war mode leaderboard sorted by average dB.
+async fn war_leaderboard(
+    admin: Admin,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    admin.require_update_admin()?;
+    let snapshot = state.store.snapshot().await;
+    let mut devices: Vec<_> = snapshot
+        .devices
+        .iter()
+        .filter(|d| d.live_avg_db.is_some())
+        .map(|d| json!({
+            "id": d.id,
+            "name": d.name,
+            "avgDb": d.live_avg_db,
+            "peakDb": d.peak_db,
+            "online": d.live_avg_db.is_some(),
+        }))
+        .collect();
+    devices.sort_by(|a, b| {
+        let a_db = a.get("avgDb").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+        let b_db = b.get("avgDb").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+        b_db.partial_cmp(&a_db).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Ok(Json(json!({ "leaderboard": devices })))
 }
 
 async fn admin_ws(

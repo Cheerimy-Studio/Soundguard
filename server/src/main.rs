@@ -6,6 +6,7 @@ mod hub;
 mod mailer;
 mod media_cipher;
 mod nvidia_bnr;
+mod totp;
 mod update;
 mod models;
 mod monitor;

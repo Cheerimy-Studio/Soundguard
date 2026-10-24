@@ -33,10 +33,33 @@ pub struct Settings {
     /// 人声增强：降噪后对语音频段做临场感提升。
     #[serde(default)]
     pub voice_enhance: bool,
+    /// 分贝战争模式：在指定时段内启用金色 UI 和排行榜。
+    #[serde(default)]
+    pub war_mode_enabled: bool,
+    #[serde(default = "default_war_mode_start")]
+    pub war_mode_start: String,
+    #[serde(default = "default_war_mode_end")]
+    pub war_mode_end: String,
+    /// 固定操作密码的 Argon2 哈希。
+    #[serde(default)]
+    pub fixed_password_hash: String,
+    /// 自动开启采集的时段（服务器时间），空则始终手动控制。
+    #[serde(default)]
+    pub capture_start: String,
+    #[serde(default)]
+    pub capture_end: String,
 }
 
 fn default_denoise_mode() -> String {
     "off".to_string()
+}
+
+fn default_war_mode_start() -> String {
+    "07:30".to_string()
+}
+
+fn default_war_mode_end() -> String {
+    "08:00".to_string()
 }
 
 impl Settings {
@@ -83,6 +106,22 @@ impl Settings {
         }
         self.threshold_db = (self.threshold_db * 10.0).round() / 10.0;
         self.denoise_mode = self.denoise_mode.trim().to_ascii_lowercase();
+        for (name, val) in [
+            ("war_mode_start", &self.war_mode_start),
+            ("war_mode_end", &self.war_mode_end),
+            ("capture_start", &self.capture_start),
+            ("capture_end", &self.capture_end),
+        ] {
+            if !val.is_empty() {
+                let parts: Vec<_> = val.split(':').collect();
+                if parts.len() != 2
+                    || parts[0].parse::<u32>().map(|h| h > 23).unwrap_or(true)
+                    || parts[1].parse::<u32>().map(|m| m > 59).unwrap_or(true)
+                {
+                    return Err(format!("{name} 格式应为 HH:MM"));
+                }
+            }
+        }
         if !matches!(
             self.denoise_mode.as_str(),
             "off" | "light" | "standard" | "strong"
@@ -166,6 +205,8 @@ pub struct Device {
     pub id: String,
     pub name: String,
     #[serde(default)]
+    pub totp_secret: String,
+    #[serde(default)]
     pub settings: DeviceSettings,
     #[serde(default)]
     pub token_hash: String,
@@ -226,6 +267,7 @@ impl Device {
             live_aec_enabled: false,
             stop_failures: 0,
             stop_locked_until: None,
+            totp_secret: crate::totp::generate_secret(),
         }
     }
 
@@ -727,6 +769,20 @@ pub struct HeartbeatResponse {
     pub notification_content: String,
     pub denoise_mode: String,
     pub voice_enhance: bool,
+    #[serde(default)]
+    pub war_mode_enabled: bool,
+    #[serde(default)]
+    pub war_mode_start: String,
+    #[serde(default)]
+    pub war_mode_end: String,
+    #[serde(default)]
+    pub capture_start: String,
+    #[serde(default)]
+    pub capture_end: String,
+    #[serde(default)]
+    pub totp_secret: String,
+    #[serde(default)]
+    pub has_fixed_password: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
