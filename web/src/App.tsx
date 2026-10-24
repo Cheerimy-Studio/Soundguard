@@ -51,7 +51,7 @@ const PAGE_META: Record<PageKey, { title: string; subtitle: string }> = {
   history: { title: "历史数据", subtitle: "回溯分贝波动，导出监测记录" },
   alerts: { title: "告警中心", subtitle: "噪音、离线与安全事件统一处置" },
   devices: { title: "设备连接", subtitle: "接入新设备，管理每台设备的独立令牌" },
-  settings: { title: "系统设置", subtitle: "全局默认策略、通知与数据留存" },
+  settings: { title: "系统设置", subtitle: "全局默认策略与设备独立策略" },
   users: { title: "用户管理", subtitle: "超级管理员与设备管理员" },
 };
 
@@ -780,7 +780,7 @@ export default function App() {
           <div className="nav-section-label">监测控制台</div>
           {NAV_ITEMS.filter((item) =>
             currentUser?.role === "super_admin"
-              || (item.key !== "settings" && item.key !== "users"),
+              || (item.key !== "devices" && item.key !== "users"),
           ).map((item) => {
             const Icon = item.icon;
             const active = page === item.key;
@@ -932,10 +932,11 @@ export default function App() {
               onNotify={notify}
             />
           )}
-          {page === "settings" && currentUser?.role === "super_admin" && (
+          {page === "settings" && (
             <SettingsPage
               overview={overview}
               deviceId={overview.device.id}
+              isSuper={currentUser?.role === "super_admin"}
               onSave={handleSaveSettings}
               onNotify={notify}
             />
@@ -952,7 +953,7 @@ export default function App() {
         <nav className="mobile-nav">
           {NAV_ITEMS.filter((item) =>
             currentUser?.role === "super_admin"
-              || (item.key !== "settings" && item.key !== "users"),
+              || (item.key !== "devices" && item.key !== "users"),
           ).map((item) => {
             const Icon = item.icon;
             return (

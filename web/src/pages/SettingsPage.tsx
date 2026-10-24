@@ -24,13 +24,48 @@ import {
   formatDb,
   formatFullDateTime,
 } from "../lib/format";
-import type { EmailStatus, Overview, Settings } from "../types";
+import type { DeviceSettings, EmailStatus, Overview, Settings } from "../types";
 
 interface SettingsPageProps {
   overview: Overview;
   deviceId: string;
+  isSuper: boolean;
   onSave: (settings: Settings) => Promise<Settings>;
   onNotify: (message: string, tone?: "success" | "error" | "info") => void;
+}
+
+type PolicyFollow = {
+  thresholdDb: boolean;
+  alertCooldownSecs: boolean;
+  offlineTimeoutSecs: boolean;
+  autoRecordEvidence: boolean;
+};
+
+type PolicyValues = {
+  thresholdDb: number;
+  alertCooldownSecs: number;
+  offlineTimeoutSecs: number;
+  autoRecordEvidence: boolean;
+};
+
+function policyFromDevice(
+  base: Settings,
+  deviceSettings: DeviceSettings | undefined,
+): { follow: PolicyFollow; values: PolicyValues } {
+  return {
+    follow: {
+      thresholdDb: deviceSettings?.thresholdDb == null,
+      alertCooldownSecs: deviceSettings?.alertCooldownSecs == null,
+      offlineTimeoutSecs: deviceSettings?.offlineTimeoutSecs == null,
+      autoRecordEvidence: deviceSettings?.autoRecordEvidence == null,
+    },
+    values: {
+      thresholdDb: deviceSettings?.thresholdDb ?? base.thresholdDb,
+      alertCooldownSecs: deviceSettings?.alertCooldownSecs ?? base.alertCooldownSecs,
+      offlineTimeoutSecs: deviceSettings?.offlineTimeoutSecs ?? base.offlineTimeoutSecs,
+      autoRecordEvidence: deviceSettings?.autoRecordEvidence ?? base.autoRecordEvidence,
+    },
+  };
 }
 
 function splitEmails(raw: string): { valid: string[]; invalid: string[] } {
@@ -48,15 +83,33 @@ function splitEmails(raw: string): { valid: string[]; invalid: string[] } {
   return { valid: [...new Set(valid)], invalid };
 }
 
-export function SettingsPage({ overview, deviceId, onSave, onNotify }: SettingsPageProps) {
+export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: SettingsPageProps) {
   const [baseline, setBaseline] = useState<Settings>(overview.settings);
   const [form, setForm] = useState<Settings>(overview.settings);
+  const [policyDeviceId, setPolicyDeviceId] = useState<string>(deviceId || overview.device.id);
+  const [policy, setPolicy] = useState(() =>
+    policyFromDevice(overview.settings, overview.devices.find((d) => d.id === (deviceId || overview.device.id))?.settings),
+  );
+  const [policySaving, setPolicySaving] = useState(false);
   const [alertEmails, setAlertEmails] = useState(overview.settings.alertRecipients.join(", "));
   const [reportEmails, setReportEmails] = useState(overview.settings.reportRecipients.join(", "));
   const [saving, setSaving] = useState(false);
   const [testingAlert, setTestingAlert] = useState(false);
   const [sendingReport, setSendingReport] = useState(false);
   const [formError, setFormError] = useState("");
+
+  useEffect(() => {
+    setPolicyDeviceId((current) =>
+      overview.devices.some((d) => d.id === current) ? current : overview.devices[0]?.id ?? "",
+    );
+  }, [overview.devices]);
+
+  useEffect(() => {
+    if (!policyDeviceId) return;
+    const device = overview.devices.find((d) => d.id === policyDeviceId);
+    if (!device) return;
+    setPolicy(policyFromDevice(overview.settings, device.settings));
+  }, [policyDeviceId, overview.devices, overview.settings]);
 
   useEffect(() => {
     let cancelled = false;
@@ -126,6 +179,37 @@ export function SettingsPage({ overview, deviceId, onSave, onNotify }: SettingsP
     }
   }
 
+  function updatePolicy<K extends keyof PolicyValues>(key: K, value: PolicyValues[K]) {
+    setPolicy((previous) => ({ ...previous, values: { ...previous.values, [key]: value } }));
+  }
+
+  function toggleFollow(key: keyof PolicyFollow, follow: boolean) {
+    setPolicy((previous) => ({ ...previous, follow: { ...previous.follow, [key]: follow } }));
+  }
+
+  function resetPolicy() {
+    const device = overview.devices.find((d) => d.id === policyDeviceId);
+    if (device) setPolicy(policyFromDevice(baseline, device.settings));
+  }
+
+  async function savePolicy() {
+    if (policySaving || !policyDeviceId) return;
+    setPolicySaving(true);
+    try {
+      const updated = await api.updateDeviceSettings(policyDeviceId, {
+        thresholdDb: policy.follow.thresholdDb ? null : policy.values.thresholdDb,
+        alertCooldownSecs: policy.follow.alertCooldownSecs ? null : policy.values.alertCooldownSecs,
+        offlineTimeoutSecs: policy.follow.offlineTimeoutSecs ? null : policy.values.offlineTimeoutSecs,
+        autoRecordEvidence: policy.follow.autoRecordEvidence ? null : policy.values.autoRecordEvidence,
+      });
+      onNotify(`设备策略已保存：${updated.name}`, "success");
+    } catch (error) {
+      onNotify(error instanceof Error ? error.message : "设备策略保存失败", "error");
+    } finally {
+      setPolicySaving(false);
+    }
+  }
+
   async function testAlert() {
     if (testingAlert) return;
     setTestingAlert(true);
@@ -154,23 +238,33 @@ export function SettingsPage({ overview, deviceId, onSave, onNotify }: SettingsP
     }
   }
 
+  const policyDevice = overview.devices.find((d) => d.id === policyDeviceId);
+
   return (
     <div className="settings-page">
       <div className="settings-topline">
         <div>
           <h2>告警与运行策略</h2>
-          <p>设置对所有设备生效，并会在下一次客户端心跳时同步。</p>
+          <p>
+            {isSuper
+              ? "先调整全局默认，再选择具体节点覆盖独立策略；修改会在下一次客户端心跳时同步。"
+              : "选择你负责的节点，调整该设备的独立策略；全局默认由超级管理员维护。"}
+          </p>
         </div>
         <div className="settings-top-actions">
-          {dirty && <span className="unsaved-chip">有未保存的更改</span>}
-          <button type="button" className="ghost-button" onClick={reset} disabled={saving}>
-            <RotateCcw size={15} />
-            重置
-          </button>
-          <button type="button" className="primary-button" onClick={() => void save()} disabled={saving}>
-            {saving ? <LoaderCircle size={15} className="spin" /> : <Save size={15} />}
-            {saving ? "正在保存" : "保存设置"}
-          </button>
+          {isSuper && dirty && <span className="unsaved-chip">有未保存的更改</span>}
+          {isSuper && (
+            <button type="button" className="ghost-button" onClick={reset} disabled={saving}>
+              <RotateCcw size={15} />
+              重置
+            </button>
+          )}
+          {isSuper && (
+            <button type="button" className="primary-button" onClick={() => void save()} disabled={saving}>
+              {saving ? <LoaderCircle size={15} className="spin" /> : <Save size={15} />}
+              {saving ? "正在保存" : "保存全局默认"}
+            </button>
+          )}
         </div>
       </div>
 
@@ -187,39 +281,219 @@ export function SettingsPage({ overview, deviceId, onSave, onNotify }: SettingsP
             <div className="settings-card-head">
               <div className="settings-icon cyan"><SlidersHorizontal size={18} /></div>
               <div>
-                <h3>分贝告警阈值</h3>
+                <h3>设备独立策略</h3>
+                <p>选择具体节点后调整；勾选“跟随全局”的项目将使用下方全局默认值。</p>
+              </div>
+            </div>
+            <div className="field-grid">
+              <label className="form-field">
+                <span>选择节点</span>
+                <select
+                  value={policyDeviceId}
+                  onChange={(event) => setPolicyDeviceId(event.target.value)}
+                >
+                  {overview.devices.map((device) => (
+                    <option key={device.id} value={device.id}>
+                      {device.name}{device.online ? "" : "（离线）"}
+                    </option>
+                  ))}
+                </select>
+                <small>仅显示你有权限操作的设备</small>
+              </label>
+            </div>
+            {policyDevice && (
+              <>
+                <div className="threshold-editor">
+                  <div className="threshold-value">
+                    <strong>{policy.values.thresholdDb.toFixed(1)}</strong>
+                    <span>dB(A)</span>
+                  </div>
+                  <div className="threshold-slider">
+                    <input
+                      type="range"
+                      min={30}
+                      max={110}
+                      step={0.5}
+                      value={policy.values.thresholdDb}
+                      disabled={policy.follow.thresholdDb}
+                      onChange={(event) => updatePolicy("thresholdDb", Number(event.target.value))}
+                      aria-label="该设备分贝阈值"
+                    />
+                    <div className="threshold-scale">
+                      <span>30 · 安静</span>
+                      <span>65 · 交谈</span>
+                      <span>110 · 嘈杂</span>
+                    </div>
+                  </div>
+                </div>
+                <label className="check-row">
+                  <input
+                    type="checkbox"
+                    checked={policy.follow.thresholdDb}
+                    onChange={(event) => toggleFollow("thresholdDb", event.target.checked)}
+                  />
+                  <span>阈值跟随全局默认（{baseline.thresholdDb.toFixed(1)} dB）</span>
+                </label>
+                <div className="field-grid three">
+                  <label className="form-field">
+                    <span>告警冷却</span>
+                    <select
+                      value={policy.values.alertCooldownSecs}
+                      disabled={policy.follow.alertCooldownSecs}
+                      onChange={(event) => updatePolicy("alertCooldownSecs", Number(event.target.value))}
+                    >
+                      <option value={60}>1 分钟</option>
+                      <option value={300}>5 分钟</option>
+                      <option value={600}>10 分钟</option>
+                      <option value={1800}>30 分钟</option>
+                    </select>
+                    <label className="check-row">
+                      <input
+                        type="checkbox"
+                        checked={policy.follow.alertCooldownSecs}
+                        onChange={(event) => toggleFollow("alertCooldownSecs", event.target.checked)}
+                      />
+                      <span>跟随全局（{baseline.alertCooldownSecs >= 60 ? `${Math.round(baseline.alertCooldownSecs / 60)} 分钟` : `${baseline.alertCooldownSecs} 秒`}）</span>
+                    </label>
+                  </label>
+                  <label className="form-field">
+                    <span>离线判定</span>
+                    <select
+                      value={policy.values.offlineTimeoutSecs}
+                      disabled={policy.follow.offlineTimeoutSecs}
+                      onChange={(event) => updatePolicy("offlineTimeoutSecs", Number(event.target.value))}
+                    >
+                      <option value={30}>30 秒</option>
+                      <option value={45}>45 秒</option>
+                      <option value={60}>60 秒</option>
+                      <option value={120}>2 分钟</option>
+                      <option value={300}>5 分钟</option>
+                    </select>
+                    <label className="check-row">
+                      <input
+                        type="checkbox"
+                        checked={policy.follow.offlineTimeoutSecs}
+                        onChange={(event) => toggleFollow("offlineTimeoutSecs", event.target.checked)}
+                      />
+                      <span>跟随全局（{baseline.offlineTimeoutSecs >= 60 ? `${Math.round(baseline.offlineTimeoutSecs / 60)} 分钟` : `${baseline.offlineTimeoutSecs} 秒`}）</span>
+                    </label>
+                  </label>
+                  <label className="form-field">
+                    <span>超限证据录音</span>
+                    <div className="static-value">
+                      {policy.values.autoRecordEvidence ? (
+                        <><CheckCircle2 size={14} /> 开启</>
+                      ) : (
+                        <><ShieldAlert size={14} /> 关闭</>
+                      )}
+                    </div>
+                    <label className="check-row">
+                      <input
+                        type="checkbox"
+                        checked={policy.follow.autoRecordEvidence}
+                        onChange={(event) => toggleFollow("autoRecordEvidence", event.target.checked)}
+                      />
+                      <span>跟随全局（{baseline.autoRecordEvidence ? "开启" : "关闭"}）</span>
+                    </label>
+                  </label>
+                </div>
+                {!policy.follow.autoRecordEvidence && (
+                  <label className="check-row policy-switch-row">
+                    <input
+                      type="checkbox"
+                      checked={policy.values.autoRecordEvidence}
+                      onChange={(event) => updatePolicy("autoRecordEvidence", event.target.checked)}
+                    />
+                    <span>为该设备{policy.values.autoRecordEvidence ? "开启" : "关闭"}超限录音</span>
+                  </label>
+                )}
+                <div className="mail-actions">
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={resetPolicy}
+                    disabled={policySaving}
+                  >
+                    <RotateCcw size={14} />
+                    还原
+                  </button>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => void savePolicy()}
+                    disabled={policySaving}
+                  >
+                    {policySaving ? <LoaderCircle size={15} className="spin" /> : <Save size={15} />}
+                    {policySaving ? "正在保存" : "保存该设备策略"}
+                  </button>
+                </div>
+                <div className="inline-note">
+                  <Clock3 size={13} />
+                  独立策略仅对所选设备生效，并在下一次客户端心跳时同步；设备接入与令牌由超级管理员在“设备连接”中管理。
+                </div>
+              </>
+            )}
+          </section>
+
+          <section className="panel settings-card">
+            <div className="settings-card-head">
+              <div className="settings-icon cyan"><SlidersHorizontal size={18} /></div>
+              <div>
+                <h3>{isSuper ? "全局默认 · 分贝告警阈值" : "全局默认 · 分贝告警阈值（只读）"}</h3>
                 <p>客户端每 30 秒计算一次平均分贝，达到阈值即生成告警并发送邮件。</p>
               </div>
             </div>
-            <div className="threshold-editor">
-              <div className="threshold-value">
-                <strong>{form.thresholdDb.toFixed(1)}</strong>
-                <span>dB(A)</span>
-              </div>
-              <div className="threshold-slider">
-                <input
-                  type="range"
-                  min={30}
-                  max={110}
-                  step={0.5}
-                  value={form.thresholdDb}
-                  onChange={(event) => update("thresholdDb", Number(event.target.value))}
-                  aria-label="分贝阈值"
-                />
-                <div className="threshold-scale">
-                  <span>30 · 安静</span>
-                  <span>65 · 交谈</span>
-                  <span>110 · 嘈杂</span>
+            {isSuper ? (
+              <div className="threshold-editor">
+                <div className="threshold-value">
+                  <strong>{form.thresholdDb.toFixed(1)}</strong>
+                  <span>dB(A)</span>
+                </div>
+                <div className="threshold-slider">
+                  <input
+                    type="range"
+                    min={30}
+                    max={110}
+                    step={0.5}
+                    value={form.thresholdDb}
+                    onChange={(event) => update("thresholdDb", Number(event.target.value))}
+                    aria-label="分贝阈值"
+                  />
+                  <div className="threshold-scale">
+                    <span>30 · 安静</span>
+                    <span>65 · 交谈</span>
+                    <span>110 · 嘈杂</span>
+                  </div>
                 </div>
               </div>
-            </div>
+            ) : (
+              <div className="global-summary">
+                <div>
+                  <span>阈值</span>
+                  <strong>{baseline.thresholdDb.toFixed(1)} dB</strong>
+                </div>
+                <div>
+                  <span>冷却</span>
+                  <strong>{baseline.alertCooldownSecs >= 60 ? `${Math.round(baseline.alertCooldownSecs / 60)} 分钟` : `${baseline.alertCooldownSecs} 秒`}</strong>
+                </div>
+                <div>
+                  <span>离线判定</span>
+                  <strong>{baseline.offlineTimeoutSecs >= 60 ? `${Math.round(baseline.offlineTimeoutSecs / 60)} 分钟` : `${baseline.offlineTimeoutSecs} 秒`}</strong>
+                </div>
+                <div>
+                  <span>超限录音</span>
+                  <strong>{baseline.autoRecordEvidence ? "开启" : "关闭"}</strong>
+                </div>
+              </div>
+            )}
             <div className="threshold-hint">
               <BellRing size={14} />
               建议室内会议场景设置在 60–70 dB。超限事件会按冷却时间合并发送邮件，避免连续轰炸。
             </div>
           </section>
 
-          <section className="panel settings-card">
+          {isSuper && (
+<section className="panel settings-card">
             <div className="settings-card-head">
               <div className="settings-icon amber"><Mail size={18} /></div>
               <div>
@@ -286,8 +560,10 @@ export function SettingsPage({ overview, deviceId, onSave, onNotify }: SettingsP
               </span>
             </div>
           </section>
+)}
 
-          <section className="panel settings-card">
+          {isSuper && (
+<section className="panel settings-card">
             <div className="settings-card-head">
               <div className="settings-icon amber"><Megaphone size={18} /></div>
               <div>
@@ -330,8 +606,10 @@ export function SettingsPage({ overview, deviceId, onSave, onNotify }: SettingsP
               通知内容由服务端保存，所有设备在下一次心跳时同步。关闭开关后客户端显示“暂无通知”。
             </div>
           </section>
+)}
 
-          <section className="panel settings-card">
+          {isSuper && (
+<section className="panel settings-card">
             <div className="settings-card-head">
               <div className="settings-icon emerald"><Send size={18} /></div>
               <div>
@@ -371,8 +649,10 @@ export function SettingsPage({ overview, deviceId, onSave, onNotify }: SettingsP
               <div className="inline-note">日报已关闭，仍可通过上方“立即生成日报”手动发送。</div>
             )}
           </section>
+)}
 
-          <section className="panel settings-card">
+          {isSuper && (
+<section className="panel settings-card">
             <div className="settings-card-head">
               <div className="settings-icon rose"><ShieldCheck size={18} /></div>
               <div>
@@ -428,8 +708,10 @@ export function SettingsPage({ overview, deviceId, onSave, onNotify }: SettingsP
               服务端按 10 秒周期检查设备在线状态，超时只发送一次离线告警，恢复后自动记录恢复事件。
             </div>
           </section>
+)}
 
-          <section className="panel settings-card">
+          {isSuper && (
+<section className="panel settings-card">
             <div className="settings-card-head">
               <div className="settings-icon violet"><Mic2 size={18} /></div>
               <div>
@@ -462,6 +744,7 @@ export function SettingsPage({ overview, deviceId, onSave, onNotify }: SettingsP
               音频只保留在本地服务端与告警邮件中，不经过第三方服务。请确认现场告知义务与适用法规。
             </div>
           </section>
+)}
         </div>
 
       </div>

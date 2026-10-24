@@ -856,6 +856,7 @@ async fn create_device(
     State(state): State<AppState>,
     Json(request): Json<CreateDeviceRequest>,
 ) -> Result<Json<CreateDeviceResponse>, AppError> {
+    admin.require_super()?;
     let snapshot = state.store.snapshot().await;
     let name = validate_device_name(&snapshot.devices, &request.name, None)?;
     let device_id = match request.device_id {
@@ -928,7 +929,7 @@ async fn update_device(
     Path(id): Path<String>,
     Json(request): Json<UpdateDeviceRequest>,
 ) -> Result<Json<DeviceView>, AppError> {
-    admin.ensure_device_access(&id)?;
+    admin.require_super()?;
     let snapshot = state.store.snapshot().await;
     if find_device(&snapshot, &id).is_none() {
         return Err(AppError::not_found("设备不存在"));
@@ -961,6 +962,8 @@ async fn update_device_settings(
     Path(id): Path<String>,
     Json(request): Json<DeviceSettingsUpdate>,
 ) -> Result<Json<DeviceView>, AppError> {
+    // Device policy (threshold / cooldown / offline / evidence) may be tuned by
+    // the device admin assigned to this node; global defaults stay super-only.
     admin.ensure_device_access(&id)?;
     let mut settings = request.into_settings();
     settings
@@ -989,7 +992,7 @@ async fn delete_device(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    admin.ensure_device_access(&id)?;
+    admin.require_super()?;
     let removed = state
         .store
         .mutate(|state| {
@@ -1029,7 +1032,7 @@ async fn rotate_device_token(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<DeviceTokenResponse>, AppError> {
-    admin.ensure_device_access(&id)?;
+    admin.require_super()?;
     let token = new_device_token();
     let token_hash = hash_token(&token);
     let found = state

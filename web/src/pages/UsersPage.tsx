@@ -147,7 +147,7 @@ export function UsersPage({ devices, currentUser, onNotify }: UsersPageProps) {
           <div className="eyebrow">角色与权限</div>
           <h2>管理后台账号</h2>
           <p>
-            超级管理员可以管理所有设备、全局设置和用户；设备管理员只能查看、控制、新增和管理分配给自己的设备，不能修改全局设置或用户。
+            超级管理员可以管理设备接入、全局设置和用户；设备管理员只能查看和操作分配给自己的设备的监测数据与对讲，不能新增、修改或删除设备，也不能修改全局设置和用户。
           </p>
         </div>
         <div className="users-hero-actions">

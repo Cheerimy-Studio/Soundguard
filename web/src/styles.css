@@ -5416,3 +5416,59 @@ input[type="range"]:disabled {
   object-fit: cover;
   box-shadow: 0 10px 30px -13px rgba(34, 211, 238, 0.55);
 }
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 10px 0 0;
+  color: #6c8499;
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.check-row input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: #14a096;
+}
+
+.check-row span {
+  line-height: 1.4;
+}
+
+.policy-switch-row {
+  padding: 9px 12px;
+  border-radius: 9px;
+  background: rgba(20, 160, 150, 0.055);
+  border: 1px solid rgba(20, 160, 150, 0.12);
+  color: #0f766e;
+  font-size: 9.5px;
+}
+
+.global-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.global-summary > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 14px;
+  border-radius: 11px;
+  background: rgba(5, 12, 22, 0.42);
+  border: 1px solid rgba(112, 146, 181, 0.09);
+}
+
+.global-summary span {
+  color: #587188;
+  font-size: 8.5px;
+}
+
+.global-summary strong {
+  color: #c7dcec;
+  font-size: 14px;
+  font-weight: 650;
+}

@@ -2168,3 +2168,30 @@ input[type="range"]::-webkit-slider-thumb {
   flex-basis: 42px;
   border-radius: 12px;
 }
+
+.check-row {
+  color: var(--muted) !important;
+}
+
+.check-row input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+.policy-switch-row {
+  color: var(--accent) !important;
+  background: var(--accent-soft) !important;
+  border-color: #d5ecee !important;
+}
+
+.global-summary > div {
+  background: var(--card-soft) !important;
+  border-color: var(--border) !important;
+}
+
+.global-summary span {
+  color: var(--muted) !important;
+}
+
+.global-summary strong {
+  color: var(--text) !important;
+}
