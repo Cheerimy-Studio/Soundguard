@@ -1838,3 +1838,40 @@ input[type="range"]::-webkit-slider-thumb {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.7; }
 }
+
+.totp-display {
+  text-align: center;
+  font-size: 36px;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  color: #0f8a92;
+  padding: 14px 0 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.totp-hint {
+  text-align: center;
+  color: #7a8b8d;
+  font-size: 11px;
+  margin: 0 0 16px;
+}
+
+/* War mode golden theme */
+body.war-mode {
+  --accent: #d4a017;
+  --accent-soft: rgba(212, 160, 23, 0.08);
+}
+
+body.war-mode .brand-mark,
+body.war-mode .brand-logo {
+  background: linear-gradient(145deg, #ffd700, #d4a017 62%, #b8860b) !important;
+}
+
+body.war-mode .primary-button {
+  background: linear-gradient(135deg, #ffd700, #d4a017) !important;
+  color: #3d2e00 !important;
+}
+
+body.war-mode .setup-screen {
+  background: radial-gradient(circle at 18% 12%, rgba(212, 160, 23, 0.08), transparent 38%), #1a1400;
+}

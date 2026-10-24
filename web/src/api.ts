@@ -273,6 +273,10 @@ export const api = {
     );
   },
 
+  warLeaderboard(): Promise<{ leaderboard: Array<{ id: string; name: string; avgDb: number | null; online: boolean }> }> {
+    return request("/war-mode/leaderboard");
+  },
+
   updateCheck(): Promise<UpdateCheck> {
     return request<UpdateCheck>("/update/check");
   },

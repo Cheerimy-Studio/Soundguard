@@ -26,6 +26,7 @@ fn hotp(secret: &[u8], counter: u64) -> u32 {
 }
 
 /// Generate the current TOTP code for a base32-encoded secret.
+#[allow(dead_code)] // used by client JS, not server directly
 pub fn totp_now(base32_secret: &str) -> Result<String, String> {
     let secret = decode_base32(base32_secret)?;
     let counter = std::time::SystemTime::now()

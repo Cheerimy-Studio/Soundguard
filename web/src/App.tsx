@@ -782,7 +782,7 @@ export default function App() {
           {NAV_ITEMS.filter((item) =>
             currentUser?.role === "super_admin"
               || currentUser?.role === "update_admin"
-              || (item.key !== "devices" && item.key !== "users"),
+              || (item.key !== "users" && item.key !== "settings"),
           ).map((item) => {
             const Icon = item.icon;
             const active = page === item.key;
@@ -928,7 +928,7 @@ export default function App() {
             <DevicesPage
               devices={overview.devices}
               selectedDeviceId={overview.device.id}
-              canManage={Boolean(currentUser)}
+              canManage={currentUser?.role === "super_admin" || currentUser?.role === "update_admin"}
               onSelectDevice={handleSelectDevice}
               onDevicesUpdated={handleDevicesUpdated}
               onNotify={notify}
@@ -956,7 +956,7 @@ export default function App() {
           {NAV_ITEMS.filter((item) =>
             currentUser?.role === "super_admin"
               || currentUser?.role === "update_admin"
-              || (item.key !== "devices" && item.key !== "users"),
+              || (item.key !== "users" && item.key !== "settings"),
           ).map((item) => {
             const Icon = item.icon;
             return (

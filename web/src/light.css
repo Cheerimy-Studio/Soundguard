@@ -1667,10 +1667,14 @@ input[type="range"]::-webkit-slider-thumb {
 
 .login-card form > label {
   display: block;
-  margin-bottom: 6px;
+  margin: 14px 0 7px;
   color: var(--text-soft);
   font-size: 9px;
   font-weight: 600;
+}
+
+.login-card form > label:first-of-type {
+  margin-top: 0;
 }
 
 .login-password {
@@ -2204,3 +2208,14 @@ input[type="range"]::-webkit-slider-thumb {
 .rolling-warn {
   color: #b45309;
 }
+
+.war-leaderboard {
+  background: linear-gradient(135deg, rgba(212, 160, 23, 0.05), rgba(212, 160, 23, 0.02)) !important;
+  border-color: #f2dfb9 !important;
+}
+
+.war-title { color: #b45309 !important; }
+.war-name { color: var(--text) !important; }
+.war-item.is-first .war-name { color: #b45309 !important; }
+.war-db { color: var(--muted) !important; }
+.war-item.is-first .war-db { color: #b45309 !important; }
