@@ -363,6 +363,8 @@ docker compose up -d --build
 | `CORS_ORIGINS` | 空 | 允许的管理端来源，逗号分隔；空时支持同源访问及内置安卓 App。安卓 App 来源为 `https://appassets.androidplatform.net` |
 | `TLS_CERT` / `TLS_KEY` | 空 | 同时配置时服务端直接提供 HTTPS/WSS；否则建议在 Nginx/Caddy 终止 TLS |
 | `MEDIA_KEY_FILE` | `data/media-key` | 音频加密密钥路径；生产建议放在 data 目录和备份卷之外 |
+| `NVIDIA_API_KEY` | 空 | build.nvidia.com 的 API Key（推荐在管理端「系统设置」填写）；配置后告警中心可对超限证据一键 NVIDIA BNR 云降噪，失败自动重试 3 次。注意：音频会上传至 NVIDIA 处理 |
+| `NVIDIA_BNR_FUNCTION_ID` | `b415e29a-…` | NVIDIA 托管 BNR 端点的 function-id，一般无需修改 |
 | `SMTP_TLS` | `starttls` | `starttls`（587）、`wrapper`（465）或 `none`（仅本地中继） |
 
 阈值、收件人、日报时间、离线判定、冷却、证据与保留天数也可在管理端设置页修改，修改后立即同步客户端。

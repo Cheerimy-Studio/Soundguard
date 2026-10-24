@@ -154,6 +154,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/alerts", get(list_alerts))
         .route("/alerts/{id}/ack", post(ack_alert))
         .route("/alerts/{id}/evidence", get(get_evidence))
+        .route("/alerts/{id}/evidence/denoise", post(denoise_evidence))
+        .route("/alerts/{id}/evidence/denoised", get(get_denoised_evidence))
+        .route("/settings/nvidia-key", put(set_nvidia_key).get(get_nvidia_key))
         .route("/settings", get(get_settings).put(update_settings))
         .route("/device/control", post(control_device))
         .route("/reports/send", post(send_report))
@@ -1293,6 +1296,163 @@ async fn get_evidence(
     headers.insert(
         header::CONTENT_DISPOSITION,
         HeaderValue::from_str(&format!("inline; filename=\"{filename}\""))
+            .map_err(|_| AppError::internal("无法生成响应"))?,
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    Ok(response)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NvidiaKeyRequest {
+    #[serde(default)]
+    api_key: String,
+}
+
+fn mask_secret(key: &str) -> String {
+    let key = key.trim();
+    if key.is_empty() {
+        return String::new();
+    }
+    let chars: Vec<char> = key.chars().collect();
+    if chars.len() <= 8 {
+        return "*".repeat(chars.len());
+    }
+    format!(
+        "{}…{}",
+        chars[..4].iter().collect::<String>(),
+        chars[chars.len() - 4..].iter().collect::<String>()
+    )
+}
+
+async fn effective_nvidia_key(state: &AppState) -> String {
+    let stored = state.store.nvidia_api_key().await;
+    if stored.trim().is_empty() {
+        state.config.nvidia_api_key.trim().to_string()
+    } else {
+        stored.trim().to_string()
+    }
+}
+
+async fn set_nvidia_key(
+    admin: Admin,
+    State(state): State<AppState>,
+    Json(request): Json<NvidiaKeyRequest>,
+) -> Result<Json<Value>, AppError> {
+    admin.require_super()?;
+    let key = request.api_key.trim().to_string();
+    state.store.set_nvidia_api_key(key).await?;
+    let effective = effective_nvidia_key(&state).await;
+    Ok(Json(json!({
+        "ok": true,
+        "configured": !effective.is_empty(),
+        "masked": mask_secret(&effective),
+    })))
+}
+
+async fn get_nvidia_key(
+    admin: Admin,
+    State(state): State<AppState>,
+) -> Result<Json<Value>, AppError> {
+    admin.require_super()?;
+    let effective = effective_nvidia_key(&state).await;
+    Ok(Json(json!({
+        "configured": !effective.is_empty(),
+        "masked": mask_secret(&effective),
+    })))
+}
+
+fn denoised_filename(source: &str) -> String {
+    source
+        .strip_suffix(".wav")
+        .map(|stem| format!("{stem}.dn.wav"))
+        .unwrap_or_else(|| format!("{source}.dn.wav"))
+}
+
+/// Generate (or reuse) the NVIDIA BNR denoised preview for an alert's
+/// evidence recording. Runs on the server so the API key never reaches the
+/// browser, with automatic retry on transient cloud failures.
+async fn denoise_evidence(
+    admin: Admin,
+    State(state): State<AppState>,
+    Path(alert_id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let alert = state
+        .store
+        .alert(&alert_id)
+        .await
+        .ok_or_else(|| AppError::not_found("告警不存在"))?;
+    admin.ensure_device_access(&alert.device_id)?;
+    let filename = alert
+        .evidence_file
+        .clone()
+        .ok_or_else(|| AppError::not_found("该告警没有录音证据"))?;
+    let safe = safe_filename(&filename).map_err(|_| AppError::bad_request("文件名无效"))?;
+    let den_name = denoised_filename(&safe);
+    if state.store.read_evidence(&den_name).await?.is_some() {
+        return Ok(Json(json!({ "ok": true, "cached": true })));
+    }
+    let api_key = effective_nvidia_key(&state).await;
+    if api_key.is_empty() {
+        return Err(AppError::bad_request(
+            "尚未配置 NVIDIA API Key，请由超级管理员在系统设置中填写",
+        ));
+    }
+    let source = state
+        .store
+        .read_evidence(&safe)
+        .await?
+        .ok_or_else(|| AppError::not_found("证据文件不存在"))?;
+    let denoised = crate::nvidia_bnr::denoise_wav_with_retry(
+        &source,
+        &api_key,
+        &state.config.nvidia_bnr_function_id,
+        1.0,
+    )
+    .await
+    .map_err(|error| AppError::new(StatusCode::BAD_GATEWAY, error))?;
+    state
+        .store
+        .save_derived_evidence(&den_name, &denoised)
+        .await
+        .map_err(|error| AppError::internal(format!("保存降噪音频失败: {error}")))?;
+    tracing::info!("NVIDIA BNR denoised evidence {safe} -> {den_name}");
+    Ok(Json(json!({ "ok": true, "cached": false })))
+}
+
+async fn get_denoised_evidence(
+    admin: Admin,
+    State(state): State<AppState>,
+    Path(alert_id): Path<String>,
+) -> Result<Response, AppError> {
+    let alert = state
+        .store
+        .alert(&alert_id)
+        .await
+        .ok_or_else(|| AppError::not_found("告警不存在"))?;
+    admin.ensure_device_access(&alert.device_id)?;
+    let filename = alert
+        .evidence_file
+        .clone()
+        .ok_or_else(|| AppError::not_found("该告警没有录音证据"))?;
+    let safe = safe_filename(&filename).map_err(|_| AppError::bad_request("文件名无效"))?;
+    let den_name = denoised_filename(&safe);
+    let bytes = state
+        .store
+        .read_evidence(&den_name)
+        .await?
+        .ok_or_else(|| {
+            AppError::not_found("尚未生成降噪版本，请先点击“AI 降噪试听”")
+        })?;
+    let mut response = Response::new(Body::from(bytes));
+    let headers = response.headers_mut();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("audio/wav"));
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&format!("inline; filename=\"{den_name}\""))
             .map_err(|_| AppError::internal("无法生成响应"))?,
     );
     headers.insert(

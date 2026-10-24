@@ -1,4 +1,5 @@
 import type {
+  NvidiaKeyState,
   Alert,
   CreateUserPayload,
   CallRecord,
@@ -256,6 +257,30 @@ export const api = {
 
   evidence(id: string): Promise<Blob> {
     return requestBlob(`/alerts/${encodeURIComponent(id)}/evidence`);
+  },
+
+  async denoiseEvidence(id: string): Promise<{ ok: boolean; cached: boolean }> {
+    return request(`/alerts/${encodeURIComponent(id)}/evidence/denoise`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  },
+
+  async evidenceDenoised(id: string): Promise<Blob> {
+    return requestBlob(
+      `/alerts/${encodeURIComponent(id)}/evidence/denoised`,
+    );
+  },
+
+  nvidiaKey(): Promise<NvidiaKeyState> {
+    return request<NvidiaKeyState>("/settings/nvidia-key");
+  },
+
+  setNvidiaKey(apiKey: string): Promise<NvidiaKeyState> {
+    return request<NvidiaKeyState>("/settings/nvidia-key", {
+      method: "PUT",
+      body: JSON.stringify({ apiKey }),
+    });
   },
 
   exportReadings(from: Date, to: Date, deviceId?: string | null): Promise<Blob> {

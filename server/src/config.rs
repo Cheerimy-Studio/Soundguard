@@ -141,6 +141,8 @@ pub struct Config {
     pub cors_origins: Vec<String>,
     pub tls_cert: Option<PathBuf>,
     pub tls_key: Option<PathBuf>,
+    pub nvidia_api_key: String,
+    pub nvidia_bnr_function_id: String,
     pub default_settings: Settings,
     pub env_overrides: SettingsOverrides,
 }
@@ -428,6 +430,8 @@ impl Config {
             public_base_url: var_or("PUBLIC_BASE_URL", format!("http://127.0.0.1:{port}")),
             default_settings,
             env_overrides,
+            nvidia_api_key: var("NVIDIA_API_KEY").unwrap_or_default(),
+            nvidia_bnr_function_id: var_or("NVIDIA_BNR_FUNCTION_ID", crate::nvidia_bnr::DEFAULT_FUNCTION_ID),
             smtp,
             ice_servers,
             cors_origins,

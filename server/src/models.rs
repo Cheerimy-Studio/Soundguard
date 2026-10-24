@@ -600,6 +600,10 @@ pub struct PersistedState {
     pub last_daily_report_date: Option<String>,
     #[serde(default)]
     pub daily_report_dates: std::collections::HashMap<String, String>,
+    /// NVIDIA build.nvidia.com API key for cloud evidence denoising (BNR).
+    /// Server-only secret; never included in client-visible snapshots.
+    #[serde(default)]
+    pub nvidia_api_key: String,
     pub updated_at: DateTime<Utc>,
 }
 

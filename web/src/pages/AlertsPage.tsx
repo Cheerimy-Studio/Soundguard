@@ -9,6 +9,7 @@ import {
   LoaderCircle,
   Mail,
   Play,
+  Sparkles,
   ShieldAlert,
   Volume2,
   WifiOff,
@@ -79,7 +80,33 @@ function EvidencePlayer({
   const [url, setUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [denoising, setDenoising] = useState(false);
+  const [denoised, setDenoised] = useState(false);
   const urlRef = useRef<string | null>(null);
+
+  function swapSource(blob: Blob) {
+    if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+    const next = URL.createObjectURL(blob);
+    urlRef.current = next;
+    setUrl(next);
+  }
+
+  async function loadDenoised() {
+    if (denoising) return;
+    setDenoising(true);
+    setFailed(false);
+    try {
+      await api.denoiseEvidence(alert.id);
+      const blob = await api.evidenceDenoised(alert.id);
+      swapSource(blob);
+      setDenoised(true);
+      onNotify("NVIDIA 云端降噪完成", "success");
+    } catch (error) {
+      onNotify(error instanceof Error ? error.message : "云端降噪失败", "error");
+    } finally {
+      setDenoising(false);
+    }
+  }
 
   async function load() {
     if (loading) return;
@@ -87,10 +114,8 @@ function EvidencePlayer({
     setFailed(false);
     try {
       const blob = await api.evidence(alert.id);
-      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
-      const next = URL.createObjectURL(blob);
-      urlRef.current = next;
-      setUrl(next);
+      swapSource(blob);
+      setDenoised(false);
     } catch (error) {
       setFailed(true);
       onNotify(error instanceof Error ? error.message : "证据加载失败", "error");
@@ -123,6 +148,18 @@ function EvidencePlayer({
             <button type="button" className="ghost-button small" onClick={() => void load()} disabled={loading}>
               {loading ? <LoaderCircle size={13} className="spin" /> : failed ? <X size={13} /> : <Play size={13} />}
               {failed ? "重试" : "在线回放"}
+            </button>
+          )}
+          {url && !denoised && (
+            <button type="button" className="ghost-button small" onClick={() => void loadDenoised()} disabled={denoising}>
+              {denoising ? <LoaderCircle size={13} className="spin" /> : <Sparkles size={13} />}
+              {denoising ? "云端降噪中…" : "AI 降噪试听"}
+            </button>
+          )}
+          {url && denoised && (
+            <button type="button" className="ghost-button small" onClick={() => void load()} disabled={loading}>
+              <Play size={13} />
+              原始音频
             </button>
           )}
           <button type="button" className="ghost-button small" onClick={() => void download()}>

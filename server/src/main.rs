@@ -5,6 +5,7 @@ mod error;
 mod hub;
 mod mailer;
 mod media_cipher;
+mod nvidia_bnr;
 mod models;
 mod monitor;
 mod notify;

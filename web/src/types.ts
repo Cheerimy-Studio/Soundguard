@@ -15,6 +15,11 @@ export interface DeviceSettings {
   autoRecordEvidence: boolean | null;
 }
 
+export interface NvidiaKeyState {
+  configured: boolean;
+  masked: string;
+}
+
 export type UserRole = "super_admin" | "device_admin";
 
 export interface User {

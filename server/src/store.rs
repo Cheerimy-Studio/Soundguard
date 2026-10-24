@@ -36,6 +36,8 @@ struct StoredState {
     last_daily_report_date: Option<String>,
     #[serde(default)]
     daily_report_dates: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    nvidia_api_key: String,
 }
 
 type ReadingIndex =
@@ -210,6 +212,10 @@ impl Store {
                 .as_ref()
                 .map(|s| s.daily_report_dates.clone())
                 .unwrap_or_default(),
+            nvidia_api_key: stored
+                .as_ref()
+                .map(|s| s.nvidia_api_key.clone())
+                .unwrap_or_default(),
             updated_at: Utc::now(),
         };
 
@@ -246,6 +252,18 @@ impl Store {
 
     pub async fn settings(&self) -> Settings {
         self.state.lock().await.settings.clone()
+    }
+
+    pub async fn nvidia_api_key(&self) -> String {
+        self.state.lock().await.nvidia_api_key.clone()
+    }
+
+    pub async fn set_nvidia_api_key(&self, key: String) -> anyhow::Result<()> {
+        self.mutate(|state| {
+            state.nvidia_api_key = key;
+        })
+        .await?;
+        Ok(())
     }
 
     pub async fn device(&self, device_id: &str) -> Option<Device> {
@@ -543,6 +561,17 @@ impl Store {
         Ok(filename)
     }
 
+    /// Store a derived artifact (e.g. NVIDIA-denoised evidence) next to its
+    /// source file in the evidence directory. The name must already be safe.
+    pub async fn save_derived_evidence(&self, filename: &str, bytes: &[u8]) -> anyhow::Result<()> {
+        let safe = safe_filename(filename)?;
+        let dir = self.data_dir.join("evidence");
+        tokio::fs::create_dir_all(&dir).await?;
+        let encrypted = self.media_cipher.encrypt(bytes)?;
+        write_private(&dir.join(safe), &encrypted).await?;
+        Ok(())
+    }
+
     pub async fn read_evidence(&self, filename: &str) -> anyhow::Result<Option<Vec<u8>>> {
         let safe = safe_filename(filename)?;
         let path = self.data_dir.join("evidence").join(safe);
@@ -639,7 +668,10 @@ impl Store {
                 let filename = entry.file_name().to_string_lossy().into_owned();
                 let expired = folder == "outbox" && modified < cutoff;
                 // Grace period protects an in-progress upload not yet linked to a record.
+                let is_denoised_cache = filename.ends_with(".dn.wav")
+                    && referenced.contains(&filename.replace(".dn.wav", ".wav"));
                 let orphan = folder != "outbox"
+                    && !is_denoised_cache
                     && !referenced.contains(&filename)
                     && modified < Utc::now() - chrono::Duration::hours(1);
                 if expired || orphan {

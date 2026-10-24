@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   AudioWaveform,
+  CloudCog,
   BellRing,
   CheckCircle2,
   Clock3,
@@ -92,6 +93,10 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
     policyFromDevice(overview.settings, overview.devices.find((d) => d.id === (deviceId || overview.device.id))?.settings),
   );
   const [policySaving, setPolicySaving] = useState(false);
+  const [nvidiaConfigured, setNvidiaConfigured] = useState<boolean | null>(null);
+  const [nvidiaMasked, setNvidiaMasked] = useState("");
+  const [nvidiaInput, setNvidiaInput] = useState("");
+  const [nvidiaSaving, setNvidiaSaving] = useState(false);
   const [alertEmails, setAlertEmails] = useState(overview.settings.alertRecipients.join(", "));
   const [reportEmails, setReportEmails] = useState(overview.settings.reportRecipients.join(", "));
   const [saving, setSaving] = useState(false);
@@ -111,6 +116,17 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
     if (!device) return;
     setPolicy(policyFromDevice(overview.settings, device.settings));
   }, [policyDeviceId, overview.devices, overview.settings]);
+
+  useEffect(() => {
+    if (!isSuper) return;
+    api
+      .nvidiaKey()
+      .then((state) => {
+        setNvidiaConfigured(state.configured);
+        setNvidiaMasked(state.masked);
+      })
+      .catch(() => undefined);
+  }, [isSuper]);
 
   useEffect(() => {
     let cancelled = false;
@@ -208,6 +224,22 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
       onNotify(error instanceof Error ? error.message : "设备策略保存失败", "error");
     } finally {
       setPolicySaving(false);
+    }
+  }
+
+  async function saveNvidiaKey() {
+    if (nvidiaSaving) return;
+    setNvidiaSaving(true);
+    try {
+      const state = await api.setNvidiaKey(nvidiaInput.trim());
+      setNvidiaConfigured(state.configured);
+      setNvidiaMasked(state.masked);
+      setNvidiaInput("");
+      onNotify(state.configured ? "NVIDIA API Key 已保存" : "NVIDIA API Key 已清除", "success");
+    } catch (error) {
+      onNotify(error instanceof Error ? error.message : "保存失败", "error");
+    } finally {
+      setNvidiaSaving(false);
     }
   }
 
@@ -759,7 +791,44 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
           </section>
 )}
 
-          {isSuper && (
+                    <section className="panel settings-card">
+            <div className="settings-card-head">
+              <div className="settings-icon rose"><CloudCog size={18} /></div>
+              <div>
+                <h3>NVIDIA 云降噪（证据试听）</h3>
+                <p>配置 build.nvidia.com 的 API Key 后，告警中心回放超限证据时可一键调用 NVIDIA BNR 云端降噪。音频将上传至 NVIDIA 处理，请确认现场告知与合规要求。</p>
+              </div>
+            </div>
+            <div className="field-grid">
+              <label className="form-field">
+                <span>API Key {nvidiaConfigured === false ? "（未配置）" : nvidiaConfigured ? `（已配置 ${nvidiaMasked}）` : ""}</span>
+                <input
+                  type="password"
+                  value={nvidiaInput}
+                  onChange={(event) => setNvidiaInput(event.target.value)}
+                  placeholder={nvidiaConfigured ? "输入新 Key 以更换，留空保持不变" : "nvapi-…"}
+                  autoComplete="off"
+                />
+                <small>仅超级管理员可见，保存后以掩码显示；也可用环境变量 NVIDIA_API_KEY 配置。</small>
+              </label>
+            </div>
+            <div className="mail-actions">
+              <button
+                type="button"
+                className="primary-button"
+                onClick={() => void saveNvidiaKey()}
+                disabled={nvidiaSaving}
+              >
+                {nvidiaSaving ? <LoaderCircle size={15} className="spin" /> : <KeyRound size={15} />}
+                保存 API Key
+              </button>
+            </div>
+            <div className="inline-note">
+              云端调用失败会自动重试 3 次；降噪结果缓存在本地服务端（加密存储），重复试听不再计费。
+            </div>
+          </section>
+
+{isSuper && (
 <section className="panel settings-card">
             <div className="settings-card-head">
               <div className="settings-icon violet"><Mic2 size={18} /></div>
