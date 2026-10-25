@@ -26,6 +26,8 @@ use tower_http::{
 use tracing::{info, warn};
 use uuid::Uuid;
 
+const ANDROID_WEBVIEW_ORIGIN: &str = "https://appassets.androidplatform.net";
+
 use crate::{
     auth::{
         hash_password, hash_token, issue_user_token, new_device_id, new_device_token, new_user_id,
@@ -217,15 +219,17 @@ pub fn build_router(state: AppState) -> Router {
 
     let cors = if state.config.cors_origins.is_empty() {
         CorsLayer::new()
-            .allow_origin(HeaderValue::from_static(
-                "https://appassets.androidplatform.net",
-            ))
+            .allow_origin(HeaderValue::from_static(ANDROID_WEBVIEW_ORIGIN))
             .allow_methods(Any)
             .allow_headers(Any)
     } else {
-        let origins: Vec<HeaderValue> = state
-            .config
-            .cors_origins
+        // The bundled Android app always needs its fixed local origin, even when
+        // an operator restricts browser origins through CORS_ORIGINS.
+        let mut configured = state.config.cors_origins.clone();
+        if !configured.iter().any(|origin| origin == ANDROID_WEBVIEW_ORIGIN) {
+            configured.push(ANDROID_WEBVIEW_ORIGIN.to_string());
+        }
+        let origins: Vec<HeaderValue> = configured
             .iter()
             .filter_map(|origin| HeaderValue::from_str(origin).ok())
             .collect();

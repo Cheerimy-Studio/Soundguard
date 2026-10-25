@@ -21,7 +21,7 @@ let child, log = '', checks = 0;
 const env = { ...process.env, DATA_DIR: data, WEB_DIST: join(root, 'web/dist'), BIND_ADDR: '127.0.0.1', PORT: String(port),
   ADMIN_PASSWORD: 'Integration-pass-123', JWT_SECRET: 'test-only-secret-123456789012345678901234567890',
   DEVICE_ID: 'initial-device', DEVICE_TOKEN: 'initial-device-token-test-only', STOP_PIN: 'test-stop-password',
-  SMTP_HOST: '', TLS_CERT: '', TLS_KEY: '', MEDIA_KEY_FILE: join(data, 'media-key'), CORS_ORIGINS: '',
+  SMTP_HOST: '', TLS_CERT: '', TLS_KEY: '', MEDIA_KEY_FILE: join(data, 'media-key'), CORS_ORIGINS: 'https://admin.example',
   ALERT_TO: '', REPORT_TO: '', ADMIN_EMAIL: '', DAILY_REPORT_ENABLED: 'false', THRESHOLD_DB: '65', ALERT_COOLDOWN_SECS: '30',
   OFFLINE_TIMEOUT_SECS: '20', RETENTION_DAYS: '30' };
 async function start() {
@@ -83,6 +83,10 @@ try {
   const admin = (await login('admin', env.ADMIN_PASSWORD)).token;
   const auth = { token: admin };
   const health = await req('/health'); assert.equal(health.response.headers.get('cache-control'), 'no-store');
+  const androidPreflight = await fetch(`${base}/api/devices`, { method: 'OPTIONS', headers: { Origin: 'https://appassets.androidplatform.net', 'Access-Control-Request-Method': 'GET' } });
+  assert.equal(androidPreflight.headers.get('access-control-allow-origin'), 'https://appassets.androidplatform.net'); checks++;
+  const adminPreflight = await fetch(`${base}/api/devices`, { method: 'OPTIONS', headers: { Origin: 'https://admin.example', 'Access-Control-Request-Method': 'GET' } });
+  assert.equal(adminPreflight.headers.get('access-control-allow-origin'), 'https://admin.example'); checks++;
   await req('/auth/login', { body: { username: 'admin', password: 'x'.repeat(5000) }, status: 413 });
   await req('/devices', { status: 401 });
   await req('/devices', { token: 'invalid', status: 401 });
