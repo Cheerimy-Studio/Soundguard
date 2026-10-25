@@ -103,6 +103,7 @@ pub struct NetState {
     pub incoming: Option<Value>,
     pub records: Vec<CallRecord>,
     pub auth_result: Option<(u64, bool, String)>,
+    pub playback: Option<crate::playback::PlaybackStatus>,
     pub exit_ready: bool,
 }
 impl Default for NetState {
@@ -121,6 +122,7 @@ impl Default for NetState {
             incoming: None,
             records: Vec::new(),
             auth_result: None,
+            playback: None,
             exit_ready: false,
         }
     }
@@ -133,6 +135,8 @@ pub enum Command {
     AutoAnswer(bool),
     RefreshCalls,
     Play(String),
+    TogglePlayback,
+    SeekPlayback(f32),
     StopPlayback,
     Verify(u64, String),
     Quit,
@@ -273,11 +277,13 @@ async fn run(
     let mut meter = tokio::time::interval(Duration::from_secs(1));
     let mut reconnect = tokio::time::interval(Duration::from_secs(3));
     let mut records_tick = tokio::time::interval(Duration::from_secs(30));
+    let mut playback_tick = tokio::time::interval(Duration::from_millis(200));
     for t in [
         &mut heartbeat,
         &mut meter,
         &mut reconnect,
         &mut records_tick,
+        &mut playback_tick,
     ] {
         t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     }
@@ -295,7 +301,7 @@ async fn run(
     let mut reports = VecDeque::<Report>::new();
     let (mut call, mut pending): (Option<CallSession>, Option<(Value, Instant)>) = (None, None);
     let (signals, mut outbound) = mpsc::unbounded_channel::<Value>();
-    let mut player: Option<crate::playback::AudioOutput> = None;
+    let mut player: Option<crate::playback::RecordingPlayer> = None;
     macro_rules! end_call {
         () => {{
             if let Some(mut current) = call.take() {
@@ -320,9 +326,20 @@ async fn run(
            Command::Mute(v)=>{if let Some(s)=&call{s.muted.store(v,std::sync::atomic::Ordering::SeqCst);}},
            Command::RefreshCalls=>{let path=format!("/api/device/calls?deviceId={}&limit=5",c.device_id);match request::<Vec<CallRecord>>(&http,&c,&path,None).await{Ok(v)=>state.lock().unwrap().records=v,Err(e)=>state.lock().unwrap().last_error=e}},
            Command::Verify(id,code)=>{let result=request::<Value>(&http,&c,"/api/device/totp",Some(json!({"deviceId":c.device_id,"code":code}))).await;let(ok,error)=match result{Ok(v)=>(v["verified"]==true,"验证码或密码不正确".into()),Err(e)=>(false,e)};state.lock().unwrap().auth_result=Some((id,ok,error));},
-           Command::Play(id)=>{if call.is_some(){state.lock().unwrap().last_error="请先结束通话再播放录音".into();continue;}let path=format!("{}/api/device/calls/{}/audio",c.server_url,id);match http.get(path).header("X-Device-Token",&c.device_token).send().await{Ok(r)if r.status().is_success()=>{if let Ok(bytes)=r.bytes().await{match crate::playback::AudioOutput::new(){Ok(p)=>{if let Some(old)=player.take(){old.stop();}let out=p.clone();let generation=out.ticket();let s=state.clone();tokio::task::spawn_blocking(move||{if let Err(e)=out.play_file(bytes.to_vec(),generation){s.lock().unwrap().last_error=e;}});player=Some(p);},Err(e)=>state.lock().unwrap().last_error=e}}},_=>state.lock().unwrap().last_error="录音加载失败".into()}},
-           Command::StopPlayback=>{if let Some(p)=player.take(){p.stop();}},
-           Command::Quit=>{end_call!();audio.capture(false);let _=request::<Value>(&http,&c,"/api/device/local-stop",Some(json!({"deviceId":c.device_id}))).await;state.lock().unwrap().exit_ready=true;break;},
+           Command::Play(id)=>{
+             if call.is_some(){state.lock().unwrap().last_error="请先结束通话再播放录音".into();continue;}
+             let path=format!("{}/api/device/calls/{}/audio",c.server_url,id);
+             let bytes=match http.get(path).header("X-Device-Token",&c.device_token).send().await{Ok(r)if r.status().is_success()=>match r.bytes().await{Ok(b)=>b.to_vec(),Err(e)=>{state.lock().unwrap().last_error=e.to_string();continue;}},_=>{state.lock().unwrap().last_error="录音加载失败".into();continue;}};
+             if player.is_none(){
+               match crate::playback::RecordingPlayer::new(){Ok(p)=>player=Some(p),Err(e)=>{state.lock().unwrap().last_error=e;continue;}}
+             }
+             let title=state.lock().unwrap().records.iter().find(|r|r.id==id).map(|r|format!("{} · {} 秒",if r.mode=="broadcast"{"远程广播"}else{"双向对讲"},r.duration_secs)).unwrap_or_else(||"通话录音".into());
+             if let Some(p)=&player{p.load(id,title,bytes);}
+           },
+           Command::TogglePlayback=>{if let Some(p)=&player{p.toggle();}},
+           Command::SeekPlayback(position)=>{if let Some(p)=&player{p.seek(position);}},
+           Command::StopPlayback=>{if let Some(p)=&player{p.stop();}},
+           Command::Quit=>{if let Some(p)=&player{p.stop();}end_call!();audio.capture(false);let _=request::<Value>(&http,&c,"/api/device/local-stop",Some(json!({"deviceId":c.device_id}))).await;state.lock().unwrap().exit_ready=true;break;},
          }}
          _=heartbeat.tick()=>{
            let snap=audio.shared.snapshot();let body=json!({"deviceId":c.device_id,"monitoring":snap.capturing,"appVersion":env!("CARGO_PKG_VERSION"),"captureError":snap.error});
@@ -344,11 +361,13 @@ async fn run(
            }
            state.lock().unwrap().pending_reports=reports.len();
          }
+         _=playback_tick.tick()=>{let next=player.as_ref().map(|p|p.status()).filter(|s|s.loaded);state.lock().unwrap().playback=next;}
          _=records_tick.tick()=>{if state.lock().unwrap().connected{if let Ok(v)=request::<Vec<CallRecord>>(&http,&c,&format!("/api/device/calls?deviceId={}&limit=5",c.device_id),None).await{state.lock().unwrap().records=v;}}}
          _=reconnect.tick(),if socket.is_none()=>{if !state.lock().unwrap().connected{continue;}if let Ok(url)=ws_url(&c){let result=tokio::select!{_=stop.changed()=>break,r=tokio::time::timeout(Duration::from_secs(4),connect_async(url))=>r};if let Ok(Ok((ws,_)))=result{socket=Some(ws);state.lock().unwrap().signaling=true;}}}
          Some(value)=outbound.recv()=>{
            if let Some(offer)=value.get("internalAccept"){
              let id=offer["callId"].as_str().unwrap_or("");let mode=offer["mode"].as_str().unwrap_or("intercom");let sdp=offer["payload"]["sdp"].as_str().unwrap_or("");
+             if let Some(p)=&player{p.stop();}
              audio.shared.set_suspended(true);audio.capture(true);
              match CallSession::answer(sdp,id,mode,policy.ice_servers.clone(),&audio,signals.clone()).await{Ok((session,answer))=>{if let Some(candidates)=early_ice.remove(id){for candidate in candidates{if let Ok(c)=serde_json::from_value(candidate){let _=session.peer.add_ice_candidate(c).await;}}}call=Some(session);let mut s=state.lock().unwrap();s.incoming=None;s.call_state="connecting".into();s.call_mode=mode.into();s.call_started=Some(Instant::now());drop(s);let _=signals.send(json!({"type":"signal","callId":id,"payload":{"kind":"answer","sdp":answer}}));},Err(e)=>{end_call!();state.lock().unwrap().last_error=e;let _=signals.send(json!({"type":"signal","callId":id,"payload":{"kind":"reject","reason":"audio-unavailable"}}));}}
            }else if let Some(ws)=socket.as_mut(){if ws.send(Message::Text(value.to_string())).await.is_err(){socket=None;state.lock().unwrap().signaling=false;end_call!();}}

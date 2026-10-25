@@ -14,7 +14,7 @@ use crate::{
     media_cipher::MediaCipher,
     models::{
         Alert, CallRecord, Device, LiveRequest, PersistedState, Reading, Settings, User, UserRole,
-        MAX_ALERTS, MAX_CALLS,
+        MAX_ALERTS_PER_DEVICE, MAX_CALLS,
     },
 };
 
@@ -190,13 +190,13 @@ impl Store {
                 alert.device_id = default_device_id.clone();
             }
         }
-        alerts.truncate(MAX_ALERTS);
+        let mut dropped = prune_alerts(&mut alerts);
         let mut calls = stored
             .as_mut()
             .map(|state| std::mem::take(&mut state.calls))
             .unwrap_or_default();
         calls.sort_by_key(|call| std::cmp::Reverse(call.created_at));
-        calls.truncate(MAX_CALLS);
+        dropped.extend(prune_calls(&mut calls));
 
         let state = PersistedState {
             version: 3,
@@ -243,6 +243,12 @@ impl Store {
             reading_write: Mutex::new(std::collections::HashMap::new()),
         });
         store.persist().await?;
+        for name in dropped {
+            if let Ok(safe) = safe_filename(&name) {
+                let _ = tokio::fs::remove_file(config.data_path("evidence").join(&safe)).await;
+                let _ = tokio::fs::remove_file(config.data_path("calls").join(&safe)).await;
+            }
+        }
         Ok(store)
     }
 
@@ -357,10 +363,17 @@ impl Store {
         let result = f(&mut next);
         next.version = 3;
         next.updated_at = Utc::now();
-        next.alerts.truncate(MAX_ALERTS);
-        next.calls.truncate(MAX_CALLS);
+        let mut dropped = prune_alerts(&mut next.alerts);
+        dropped.extend(prune_calls(&mut next.calls));
         self.persist_locked(&next).await?;
         *state = next;
+        drop(state);
+        for name in dropped {
+            if let Ok(safe) = safe_filename(&name) {
+                let _ = tokio::fs::remove_file(self.data_dir.join("evidence").join(&safe)).await;
+                let _ = tokio::fs::remove_file(self.data_dir.join("calls").join(&safe)).await;
+            }
+        }
         Ok(result)
     }
 
@@ -699,6 +712,36 @@ impl Store {
     }
 }
 
+fn prune_alerts(alerts: &mut Vec<Alert>) -> Vec<String> {
+    use std::collections::HashMap;
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    let mut kept = Vec::with_capacity(alerts.len());
+    let mut dropped = Vec::new();
+    for alert in alerts.drain(..) {
+        let count = counts.entry(alert.device_id.clone()).or_insert(0);
+        *count += 1;
+        if *count <= 50 {
+            kept.push(alert);
+        } else if let Some(file) = alert.evidence_file {
+            dropped.push(file);
+        }
+    }
+    *alerts = kept;
+    dropped
+}
+
+fn prune_calls(calls: &mut Vec<CallRecord>) -> Vec<String> {
+    let mut dropped = Vec::new();
+    while calls.len() > MAX_CALLS {
+        if let Some(call) = calls.pop() {
+            if let Some(file) = call.audio_file {
+                dropped.push(file);
+            }
+        }
+    }
+    dropped
+}
+
 pub fn safe_filename(raw: &str) -> anyhow::Result<String> {
     let name = Path::new(raw)
         .file_name()
@@ -759,6 +802,49 @@ fn write_initial_admin_password(config: &Config, password: &str) -> anyhow::Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retention_caps_alerts_per_device_and_calls_globally() {
+        use crate::models::AlertKind;
+        let mut alerts: Vec<Alert> = (0..55)
+            .map(|i| {
+                let mut alert =
+                    Alert::new("dev-a", AlertKind::Noise, "warning", format!("a{i}"), "m");
+                alert.evidence_file = Some(format!("a{i}.wav"));
+                alert
+            })
+            .collect();
+        alerts.extend((0..55).map(|i| {
+            let mut alert =
+                Alert::new("dev-b", AlertKind::Noise, "warning", format!("b{i}"), "m");
+            alert.evidence_file = Some(format!("b{i}.wav"));
+            alert
+        }));
+        let dropped = prune_alerts(&mut alerts);
+        assert_eq!(alerts.len(), 100);
+        assert_eq!(dropped.len(), 10);
+        assert_eq!(alerts.iter().filter(|a| a.device_id == "dev-a").count(), 50);
+        assert_eq!(alerts.iter().filter(|a| a.device_id == "dev-b").count(), 50);
+
+        let now = Utc::now();
+        let mut calls: Vec<CallRecord> = (0..12)
+            .map(|i| CallRecord {
+                id: format!("call-{i}"),
+                device_id: "dev-a".into(),
+                mode: "intercom".into(),
+                started_at: now,
+                ended_at: now,
+                duration_secs: 1,
+                status: "ended".into(),
+                audio_file: Some(format!("call-{i}.wav")),
+                audio_mime: None,
+                created_at: now,
+            })
+            .collect();
+        let dropped = prune_calls(&mut calls);
+        assert_eq!(calls.len(), 10);
+        assert_eq!(dropped.len(), 2);
+    }
+
     #[test]
     fn filenames_reject_paths_and_parent_components() {
         for name in [

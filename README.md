@@ -1,11 +1,11 @@
 # 声垣 SoundGuard · 智能分贝监测与远程对讲系统
 
-> 采集端已统一为原生 egui 客户端，Windows WebView/Tauri 与 Win7 客户端不再构建或发布。
+> 采集端已统一为原生 egui 客户端；Windows 10/11 使用标准工具链，Windows 7 使用 nightly `x86_64-win7-windows-msvc` 目标构建，均不使用 WebView。
 > 本轮修复、验证与升级说明见最新 Fix 包内的 `READ_ME_FIRST.md`。
 
 一套 Rust 全栈环境声学监测系统：
 
-- **采集端（Windows 10/11）**：Rust + eframe/egui 原生窗口，WASAPI 采集与回放，无需 WebView2；30 秒能量均值、超限报警音、证据 WAV、设置/退出 2FA 验证、断线重连与 WebRTC 对讲。
+- **采集端（Windows 7/10/11）**：Rust + eframe/egui 原生窗口，WASAPI 采集与回放，无需 WebView2；30 秒能量均值、超限报警音、证据 WAV、设置/退出 2FA 验证、断线重连与 WebRTC 对讲。
 - **服务端**：Rust + Axum，JSON 文件持久化、用户名/密码登录、Argon2 哈希、超级管理员/更新管理员/设备管理员角色、设备级策略、SMTP 告警、日报、离线检测与 WebRTC 信令。Linux 发布包可直接部署到服务器。
 - **管理端**：React + TypeScript + ECharts，浅色响应式界面，多设备接入与切换、实时波形、趋势、告警中心、证据回放、远程采集启停、WebRTC 双向对讲与单向广播、分贝战争排行榜。
 - **安卓端**：原生 WebView 外壳 + 前台监听服务，本地记忆登录、设备选择、实时波形、超标通知、录音回放、双向对讲、公告、采集计划与分贝战争排名。
@@ -141,7 +141,7 @@ ICE_SERVERS=[{"urls":"stun:stun.l.google.com:19302"},{"urls":"turn:turn.example.
 
 ### 环境要求
 
-- Windows 10/11 x64（原生采集端；Windows 7 不再支持）
+- Windows 7/10/11 x64（原生采集端）
 - Node.js 20+（本项目验证于 Node 24）
 - Rust stable（本项目验证于 1.94）与 MSVC Build Tools
 - 可选：Python 3 + Pillow（重新生成图标）；本仓库已包含生成好的图标
@@ -228,7 +228,20 @@ dist\soundguard-client-native.exe
 powershell -ExecutionPolicy Bypass -File scripts\start.ps1
 ```
 
-启动脚本要求先存在 `.env`，并会从仓库根目录启动服务端，确保能读取 `web/dist`。原生采集端不需要 WebView2。
+启动脚本要求先存在 `.env`，并会从仓库根目录启动服务端，确保能读取 `web/dist`。原生采集端不需要 WebView2；Windows 7 版本需要 WebView2 无关的独立构建（见 4.5.2）。
+
+### 4.5.2 Windows 7 原生构建
+
+Win7 使用 nightly 的 `x86_64-win7-windows-msvc` 目标 + `build-std`，并静态链接 CRT：
+
+```powershell
+rustup +nightly component add rust-src
+npm run build:client:win7
+```
+
+脚本会调用 `scripts/build-win7.ps1`，使用 `client-native/win7-libs` 中的 Windows 导入库，
+并把 `combase.dll` 导入重定向到 `ole32.dll`，产物为 `dist\soundguard-client-win7.exe`。
+Win7 安装包为 `dist\soundguard-client-win7-setup-0.2.2.exe`，支持开机自启。
 
 ### 4.6 安卓 App
 

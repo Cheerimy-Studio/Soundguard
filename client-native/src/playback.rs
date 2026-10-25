@@ -8,7 +8,6 @@ pub struct AudioOutput {
 enum Output {
     Pcm(u16, u32, Vec<f32>, bool, u64),
     Stop,
-    Volume(f32),
 }
 impl AudioOutput {
     pub fn new() -> Result<Self, String> {
@@ -56,7 +55,6 @@ impl AudioOutput {
                         }
                     }
                     Output::Stop => sink.clear(),
-                    Output::Volume(v) => sink.set_volume(v.clamp(0.0, 1.0)),
                 }
             }
             sink.stop();
@@ -80,27 +78,6 @@ impl AudioOutput {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let _ = self.tx.try_send(Output::Stop);
     }
-    pub fn volume(&self, v: f32) {
-        let _ = self.tx.try_send(Output::Volume(v));
-    }
-    pub fn ticket(&self) -> u64 {
-        self.generation.load(std::sync::atomic::Ordering::SeqCst)
-    }
-    pub fn play_file(&self, bytes: Vec<u8>, generation: u64) -> Result<(), String> {
-        let result = decode_file(bytes, |ch, rate, pcm| {
-            if generation != self.ticket() {
-                return Err("播放已取消".into());
-            }
-            self.tx
-                .send(Output::Pcm(ch, rate, pcm, false, generation))
-                .map_err(|_| "扬声器已关闭".into())
-        });
-        if generation != self.ticket() {
-            Ok(())
-        } else {
-            result
-        }
-    }
     #[cfg(test)]
     pub fn test_null() -> Self {
         let (tx, rx) = mpsc::sync_channel(32);
@@ -111,6 +88,151 @@ impl AudioOutput {
         }
     }
 }
+#[derive(Debug, Clone, Default)]
+pub struct PlaybackStatus {
+    pub id: String,
+    pub title: String,
+    pub duration: f32,
+    pub position: f32,
+    pub playing: bool,
+    pub loaded: bool,
+    pub error: Option<String>,
+}
+
+pub struct RecordingPlayer {
+    tx: SyncSender<PlayerCommand>,
+    status: std::sync::Arc<std::sync::Mutex<PlaybackStatus>>,
+}
+
+enum PlayerCommand {
+    Load {
+        id: String,
+        title: String,
+        bytes: Vec<u8>,
+    },
+    Toggle,
+    Seek(f32),
+    Stop,
+}
+
+impl RecordingPlayer {
+    pub fn new() -> Result<Self, String> {
+        let (tx, rx) = mpsc::sync_channel(8);
+        let status = std::sync::Arc::new(std::sync::Mutex::new(PlaybackStatus::default()));
+        let shared = status.clone();
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let (_stream, handle) = match rodio::OutputStream::try_default() {
+                Ok(value) => value,
+                Err(error) => {
+                    let _ = ready_tx.send(Err(format!("扬声器初始化失败：{error}")));
+                    return;
+                }
+            };
+            let sink = match rodio::Sink::try_new(&handle) {
+                Ok(value) => value,
+                Err(error) => {
+                    let _ = ready_tx.send(Err(error.to_string()));
+                    return;
+                }
+            };
+            let _ = ready_tx.send(Ok(()));
+            let mut duration = 0.0_f32;
+            loop {
+                match rx.recv_timeout(std::time::Duration::from_millis(120)) {
+                    Ok(PlayerCommand::Load { id, title, bytes }) => match decode_file_to_pcm(bytes) {
+                        Ok((pcm, channels, rate)) => {
+                            duration = pcm.len() as f32 / channels as f32 / rate as f32;
+                            sink.clear();
+                            sink.append(rodio::buffer::SamplesBuffer::new(channels, rate, pcm));
+                            sink.play();
+                            let mut s = shared.lock().unwrap_or_else(|p| p.into_inner());
+                            s.id = id;
+                            s.title = title;
+                            s.duration = duration;
+                            s.position = 0.0;
+                            s.playing = true;
+                            s.loaded = true;
+                            s.error = None;
+                        }
+                        Err(error) => {
+                            sink.stop();
+                            let mut s = shared.lock().unwrap_or_else(|p| p.into_inner());
+                            s.loaded = false;
+                            s.playing = false;
+                            s.error = Some(error);
+                        }
+                    },
+                    Ok(PlayerCommand::Toggle) => {
+                        if sink.is_paused() {
+                            sink.play();
+                        } else {
+                            sink.pause();
+                        }
+                    }
+                    Ok(PlayerCommand::Seek(position)) => {
+                        let target = position.clamp(0.0, duration.max(0.0));
+                        let _ = sink.try_seek(std::time::Duration::from_secs_f32(target));
+                    }
+                    Ok(PlayerCommand::Stop) => {
+                        sink.clear();
+                        let mut s = shared.lock().unwrap_or_else(|p| p.into_inner());
+                        s.loaded = false;
+                        s.playing = false;
+                        s.position = 0.0;
+                        s.id.clear();
+                        s.title.clear();
+                        s.duration = 0.0;
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        let mut s = shared.lock().unwrap_or_else(|p| p.into_inner());
+                        if s.loaded {
+                            s.position = sink.get_pos().as_secs_f32().min(duration);
+                            s.playing = !sink.is_paused() && !sink.empty();
+                        }
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+        });
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| "扬声器响应超时".to_string())??;
+        Ok(Self { tx, status })
+    }
+    pub fn load(&self, id: String, title: String, bytes: Vec<u8>) {
+        let _ = self.tx.try_send(PlayerCommand::Load { id, title, bytes });
+    }
+    pub fn toggle(&self) {
+        let _ = self.tx.try_send(PlayerCommand::Toggle);
+    }
+    pub fn seek(&self, position: f32) {
+        let _ = self.tx.try_send(PlayerCommand::Seek(position));
+    }
+    pub fn stop(&self) {
+        let _ = self.tx.try_send(PlayerCommand::Stop);
+    }
+    pub fn status(&self) -> PlaybackStatus {
+        self.status
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+}
+
+pub fn decode_file_to_pcm(bytes: Vec<u8>) -> Result<(Vec<f32>, u16, u32), String> {
+    let mut samples = Vec::new();
+    let mut channels = 1_u16;
+    let mut rate = 48_000_u32;
+    decode_file(bytes, |ch, sample_rate, part| {
+        channels = ch;
+        rate = sample_rate;
+        samples.extend(part);
+        Ok(())
+    })?;
+    Ok((samples, channels, rate))
+}
+
 pub fn decode_file(
     bytes: Vec<u8>,
     emit: impl FnMut(u16, u32, Vec<f32>) -> Result<(), String>,
@@ -210,19 +332,40 @@ fn decode_file_inner(
     Ok(())
 }
 
-/// Same three 880 Hz tones as the legacy client's over-limit alarm.
+/// Three rising/falling sweeps (1.5 s) so the alarm is clearly audible even
+/// when the ambient level is high.
 pub fn alarm_samples() -> Vec<f32> {
-    (0..48000)
-        .map(|i| {
-            let t = i as f32 / 48000.0;
-            let local = t % 0.36;
-            if local < 0.28 {
-                (2.0 * std::f32::consts::PI * 880.0 * t).sin() * (-8.0 * local / 0.28).exp()
-            } else {
-                0.0
-            }
-        })
-        .collect()
+    let mut phase = 0.0_f32;
+    let mut output = Vec::with_capacity(72_000);
+    for i in 0..72_000 {
+        let t = i as f32 / 48_000.0;
+        let cycle = t % 0.5;
+        if cycle < 0.38 {
+            let frequency = 700.0 + 400.0 * (cycle / 0.38);
+            phase += 2.0 * std::f32::consts::PI * frequency / 48_000.0;
+            output.push(phase.sin() * 0.75);
+        } else {
+            phase = 0.0;
+            output.push(0.0);
+        }
+    }
+    output
+}
+
+/// Play through a normal default output stream; no shared queue or intercom
+/// sink is involved, so the alarm always starts at full length.
+pub fn play_alarm(volume: f32) -> Result<(), String> {
+    let (_stream, handle) =
+        rodio::OutputStream::try_default().map_err(|e| format!("扬声器初始化失败：{e}"))?;
+    let sink = rodio::Sink::try_new(&handle).map_err(|e| e.to_string())?;
+    sink.set_volume(volume.clamp(0.0, 1.0));
+    sink.append(rodio::buffer::SamplesBuffer::new(
+        1,
+        48_000,
+        alarm_samples(),
+    ));
+    sink.sleep_until_end();
+    Ok(())
 }
 
 #[cfg(test)]
@@ -256,9 +399,46 @@ mod tests {
         assert!(decode_file(malformed, |_, _, _| Ok(())).is_err());
     }
     #[test]
+    #[ignore = "requires an audio output device"]
+    fn recording_player_loads_and_seeks() {
+        fn silent_wav(seconds: u32) -> Vec<u8> {
+            let data_len = seconds * 48_000 * 2;
+            let mut wav = Vec::with_capacity(44 + data_len as usize);
+            wav.extend_from_slice(b"RIFF");
+            wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+            wav.extend_from_slice(b"WAVEfmt ");
+            wav.extend_from_slice(&16u32.to_le_bytes());
+            wav.extend_from_slice(&1u16.to_le_bytes());
+            wav.extend_from_slice(&1u16.to_le_bytes());
+            wav.extend_from_slice(&48_000u32.to_le_bytes());
+            wav.extend_from_slice(&96_000u32.to_le_bytes());
+            wav.extend_from_slice(&2u16.to_le_bytes());
+            wav.extend_from_slice(&16u16.to_le_bytes());
+            wav.extend_from_slice(b"data");
+            wav.extend_from_slice(&data_len.to_le_bytes());
+            wav.resize(44 + data_len as usize, 0);
+            wav
+        }
+        let player = RecordingPlayer::new().expect("speaker");
+        player.load("test".into(), "测试录音".into(), silent_wav(2));
+        for _ in 0..30 {
+            if player.status().loaded {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let status = player.status();
+        assert!(status.loaded, "recording did not load: {:?}", status.error);
+        assert!((status.duration - 2.0).abs() < 0.2, "duration={}", status.duration);
+        player.seek(1.0);
+        std::thread::sleep(std::time::Duration::from_millis(350));
+        assert!(player.status().position > 0.7, "seek did not move");
+        player.stop();
+    }
+    #[test]
     fn alarm_signal_is_finite_and_audible() {
         let samples = alarm_samples();
-        assert_eq!(samples.len(), 48_000);
+        assert_eq!(samples.len(), 72_000);
         assert!(samples.iter().all(|v| v.is_finite()));
         assert!(samples.iter().any(|v| v.abs() > 0.25));
         assert!(samples.iter().any(|v| v.abs() < 0.001));

@@ -1,6 +1,6 @@
 {
   "name": "soundguard",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "SoundGuard · Rust/egui decibel monitoring and remote intercom system",
   "scripts": {
@@ -21,6 +21,7 @@
     "test:audio": "bash scripts/test-client-core.sh",
     "build:installers": "powershell -ExecutionPolicy Bypass -File scripts/build-installers.ps1",
     "version:bump": "node scripts/bump-version.mjs",
-    "release": "npm run version:bump && npm run build:web && npm run build:server && npm run build:client && npm run build:installers"
+    "release": "npm run version:bump && npm run build:web && npm run build:server && npm run build:client && npm run build:client:win7 && npm run build:installers",
+    "build:client:win7": "powershell -ExecutionPolicy Bypass -File scripts/build-win7.ps1"
   }
 }

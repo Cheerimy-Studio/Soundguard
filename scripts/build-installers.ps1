@@ -20,8 +20,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "客户端安装包构建失败" }
     & $makensis "deploy\windows\server.nsi"
     if ($LASTEXITCODE -ne 0) { throw "服务端安装包构建失败" }
+    & $makensis "deploy\windows\client-native-win7.nsi"
+    if ($LASTEXITCODE -ne 0) { throw "Win7 客户端安装包构建失败" }
     $version = (Get-Content (Join-Path $root "package.json") | ConvertFrom-Json).version
-    Write-Host "已生成 dist\soundguard-client-setup-$version.exe 与 dist\soundguard-server-setup-$version.exe"
+    Write-Host "已生成 dist\soundguard-client-setup-$version.exe、dist\soundguard-client-win7-setup-$version.exe 与 dist\soundguard-server-setup-$version.exe"
 } finally {
     Pop-Location
 }

@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { graphic } from "echarts";
 import type { EChartsOption } from "echarts";
 import {
   ArrowRight,
@@ -98,6 +97,8 @@ export function OverviewPage({
       new Date(reading.recordedAt).getTime(),
       reading.avgDb,
     ]);
+    const firstPoint = points.length ? Number(points[0][0]) : undefined;
+    const lastPoint = points.length ? Number(points[points.length - 1][0]) : undefined;
     const averageLine =
       average === null
         ? []
@@ -111,7 +112,10 @@ export function OverviewPage({
       85,
     );
     return {
-      animation: false,
+      animation: true,
+      animationDuration: 300,
+      animationDurationUpdate: 220,
+      animationEasingUpdate: "linear",
       grid: { left: 12, right: 18, top: 34, bottom: 24, containLabel: true },
       legend: {
         top: 0,
@@ -151,6 +155,8 @@ export function OverviewPage({
       },
       xAxis: {
         type: "time",
+        min: firstPoint,
+        max: lastPoint === undefined ? undefined : Math.max(lastPoint, (firstPoint ?? lastPoint) + 1000),
         axisLine: { lineStyle: { color: "#e5e9ef" } },
         axisTick: { show: false },
         axisLabel: {
@@ -184,12 +190,6 @@ export function OverviewPage({
           smooth: 0.25,
           symbol: "none",
           lineStyle: { width: 2, color: "#0d7a82" },
-          areaStyle: {
-            color: new graphic.LinearGradient(0, 0, 0, 1, [
-              { offset: 0, color: "rgba(13,122,130,.16)" },
-              { offset: 1, color: "rgba(13,122,130,0)" },
-            ]),
-          },
           data: points,
         },
         {

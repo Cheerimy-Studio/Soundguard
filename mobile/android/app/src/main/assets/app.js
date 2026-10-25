@@ -564,6 +564,20 @@
     if (!Number.isFinite(a) && Number.isFinite(b)) return minute<b;
     return a===b || (a<b ? minute>=a && minute<b : minute>=a || minute<b);
   }
+  // The native collector answers with PCMU/8000. Force the same codec here so
+  // Chrome does not keep Opus on the sending side of an asymmetric negotiation.
+  function preferPcmu(pc) {
+    try {
+      const transceiver = pc.getTransceivers().find((item) => item.sender?.track?.kind === "audio");
+      const codecs = (window.RTCRtpSender && RTCRtpSender.getCapabilities)
+        ? RTCRtpSender.getCapabilities("audio")?.codecs || []
+        : [];
+      const pcmu = codecs.filter((codec) => /PCMU\/8000/i.test(codec.mimeType || ""));
+      if (transceiver && pcmu.length) transceiver.setCodecPreferences(pcmu);
+    } catch (error) {
+      console.warn("codec preference failed", error);
+    }
+  }
   function currentPolicy() {
     const settings=state.settings || {};
     const now = (Date.parse(state.overview?.serverTime) || Date.now()) + (Date.now()-state.overviewSyncedAt)
@@ -578,9 +592,11 @@
     const policy = currentPolicy();
     const planStart = state.settings?.captureStart || "";
     const planEnd = state.settings?.captureEnd || "";
-    $("policySummary").textContent = planStart || planEnd
+    const planText = planStart || planEnd
       ? `计划 ${planStart ? `每日 ${planStart} 自动开启` : "每日 00:00 起采集"}${planEnd ? ` · ${planEnd} 自动关闭` : " · 不自动关闭"} · 服务器时区`
-      : "手动采集 · 由管理员控制";
+      : "";
+    $("policySummary").textContent = planText;
+    $("policySummary").classList.toggle("hidden", !planText);
     document.body.classList.toggle("war-mode", policy.war);
     const live = state.liveLatest;
     const suspended = Boolean(live ? live.suspended : device.liveSuspended);
@@ -742,10 +758,12 @@
     const threshold = Number(
       historyMode ? state.rangeThreshold ?? state.settings?.thresholdDb ?? 65 : state.settings?.thresholdDb ?? 65,
     );
+    const liveLimit = 60;
     const points = historyMode
       ? state.history
-          .map((reading) => ({
+          .map((reading, index) => ({
             t: Date.parse(reading.recordedAt),
+            index,
             current: Number(reading.avgDb),
             average: Number(reading.peakDb),
             over: Boolean(reading.overThreshold) || Number(reading.avgDb) >= threshold,
@@ -753,7 +771,12 @@
           .filter((point) => Number.isFinite(point.t) && Number.isFinite(point.current))
       : state.points
           .filter((point) => point.t >= windowStart - 1000)
-          .map((point) => ({ ...point, over: point.average !== null && point.average >= threshold }));
+          .slice(-liveLimit)
+          .map((point, index) => ({
+            ...point,
+            index,
+            over: point.average !== null && point.average >= threshold,
+          }));
 
     const peakValues = points.map((point) => (historyMode ? point.average : point.current)).filter(Number.isFinite);
     const minDb = 30;
@@ -761,7 +784,10 @@
       100,
       Math.ceil((Math.max(threshold + 15, ...peakValues, 85) + 5) / 10) * 10,
     );
-    const x = (time) => padLeft + ((time - windowStart) / windowMs) * plotWidth;
+    const x = (point) =>
+      historyMode
+        ? padLeft + ((point.t - windowStart) / windowMs) * plotWidth
+        : padLeft + ((point.index ?? 0) / (liveLimit - 1)) * plotWidth;
     const y = (db) => padTop + ((maxDb - db) / (maxDb - minDb)) * plotHeight;
 
     ctx.font = "12px -apple-system, 'Segoe UI', 'Noto Sans SC', 'SoundGuard CJK', sans-serif";
@@ -788,7 +814,7 @@
       ctx.fillText(`${minutes} 分钟前`, padLeft + 26, height - 10);
       ctx.fillText(`${Math.round(minutes / 2)} 分钟前`, padLeft + plotWidth / 2, height - 10);
     } else {
-      ctx.fillText("60 秒前", padLeft + 22, height - 10);
+      ctx.fillText("开始", padLeft + 12, height - 10);
       ctx.fillText("30 秒前", padLeft + plotWidth / 2, height - 10);
     }
     ctx.fillText("现在", width - padRight - 15, height - 10);
@@ -828,7 +854,7 @@
         if (segment.length === 0) return;
         ctx.beginPath();
         segment.forEach((point, index) => {
-          const px = x(point.t);
+          const px = x(point);
           const py = y(point.value);
           if (index === 0) ctx.moveTo(px, py);
           else ctx.lineTo(px, py);
@@ -842,8 +868,8 @@
         ctx.stroke();
         ctx.setLineDash([]);
         if (fill && segment.length > 1) {
-          ctx.lineTo(x(segment[segment.length - 1].t), padTop + plotHeight);
-          ctx.lineTo(x(segment[0].t), padTop + plotHeight);
+          ctx.lineTo(x(segment[segment.length - 1]), padTop + plotHeight);
+          ctx.lineTo(x(segment[0]), padTop + plotHeight);
           ctx.closePath();
           ctx.fillStyle = fill;
           ctx.fill();
@@ -860,16 +886,16 @@
     };
 
     drawLine(
-      points.map((point) => ({ t: point.t, value: point.current })),
+      points.map((point) => ({ ...point, t: point.t, value: point.current })),
       "#0e7c86",
       2,
       false,
-      "rgba(14, 124, 134, 0.08)",
+      null,
     );
 
     if (historyMode) {
       drawLine(
-        points.map((point) => ({ t: point.t, value: point.average })).filter((point) => Number.isFinite(point.value)),
+        points.map((point) => ({ ...point, t: point.t, value: point.average })).filter((point) => Number.isFinite(point.value)),
         "#a07a38",
         1.5,
         true,
@@ -879,7 +905,7 @@
       drawLine(
         points
           .filter((point) => point.average !== null)
-          .map((point) => ({ t: point.t, value: point.average })),
+          .map((point) => ({ ...point, t: point.t, value: point.average })),
         "#86989b",
         1.5,
         true,
@@ -890,7 +916,7 @@
     for (const point of points) {
       if (!point.over) continue;
       ctx.beginPath();
-      ctx.arc(x(point.t), y(point.current), 3.2, 0, Math.PI * 2);
+      ctx.arc(x(point), y(point.current), 3.2, 0, Math.PI * 2);
       ctx.fillStyle = "#bd4438";
       ctx.fill();
     }
@@ -1530,6 +1556,7 @@
       const pc = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 4 });
       call.pc = pc;
       call.local.getTracks().forEach((track) => pc.addTrack(track, call.local));
+      preferPcmu(pc);
       pc.onicecandidate = (event) => {
         if (!event.candidate || !call.active) return;
         sendSocket({
@@ -1544,7 +1571,6 @@
       pc.ontrack = (event) => {
         const remote = event.streams[0] || new MediaStream([event.track]);
         call.remote = remote;
-        call.guard?.attachRemote(remote);
         const audio = $("remoteAudio");
         audio.srcObject = remote;
         audio.muted = call.mode === "broadcast";

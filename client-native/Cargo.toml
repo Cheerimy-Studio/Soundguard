@@ -1,6 +1,6 @@
 [package]
 name = "soundguard-client-native"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "SoundGuard native edge collector (no WebView)"
 license = "MIT"
@@ -48,10 +48,7 @@ symphonia = { version = "0.5", features = ["all"] }
 
 # Misc
 image = { version = "0.25", default-features = false, features = ["png"] }
-anyhow = "1"
 rand = "0.9"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [target.'cfg(windows)'.dependencies]
 wasapi = "0.26"

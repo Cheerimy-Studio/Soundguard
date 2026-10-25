@@ -1,2 +1,5 @@
 [env]
 CMAKE_POLICY_VERSION_MINIMUM = "3.5"
+
+[target.x86_64-win7-windows-msvc]
+rustflags = ['--cfg=getrandom_backend="windows_legacy"', '-Ctarget-feature=+crt-static']

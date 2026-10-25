@@ -174,6 +174,11 @@ impl CallSession {
             let duck = remote_duck.clone();
             async move {
                 while let Ok((packet, _)) = track.read_rtp().await {
+                    // Only PT 0 is PCMU. Ignore telephone-event / comfort-noise
+                    // packets, which would otherwise be decoded as loud noise.
+                    if packet.header.payload_type != 0 {
+                        continue;
+                    }
                     let pcm = mulaw_to_pcm(&packet.payload);
                     let rms =
                         (pcm.iter().map(|s| s * s).sum::<f32>() / pcm.len().max(1) as f32).sqrt();
@@ -360,6 +365,8 @@ mod interoperability {
         .unwrap();
         assert!(answer.contains("PCMU/8000"));
         assert!(!answer.contains("a=rtpmap:8 PCMA"));
+        assert!(!answer.to_ascii_lowercase().contains("opus"), "answer unexpectedly offers Opus: {answer}");
+        assert!(!answer.contains("a=rtpmap:101"), "answer unexpectedly offers telephone-event: {answer}");
         peer.set_remote_description(RTCSessionDescription::answer(answer).unwrap())
             .await
             .unwrap();

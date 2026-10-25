@@ -5,8 +5,8 @@ use uuid::Uuid;
 
 use crate::config::parse_recipients;
 
-pub const MAX_ALERTS: usize = 2000;
-pub const MAX_CALLS: usize = 500;
+pub const MAX_ALERTS_PER_DEVICE: usize = 50;
+pub const MAX_CALLS: usize = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
