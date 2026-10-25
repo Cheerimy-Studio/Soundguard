@@ -44,7 +44,6 @@ hmac = "0.12"
 
 rodio = { version = "0.20", default-features = false }
 symphonia = { version = "0.5", features = ["all"] }
-opus = "0.3"
 
 # Misc
 image = { version = "0.25", default-features = false, features = ["png"] }

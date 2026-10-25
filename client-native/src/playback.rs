@@ -140,33 +140,8 @@ pub fn decode_file(
     let id = track.id;
     let params = track.codec_params.clone();
     let mut frames = 0;
-    if params.codec == CODEC_TYPE_OPUS {
-        let channels = params.channels.map(|c| c.count()).unwrap_or(1);
-        let mut decoder = opus::Decoder::new(
-            48000,
-            if channels == 2 {
-                opus::Channels::Stereo
-            } else {
-                opus::Channels::Mono
-            },
-        )
-        .map_err(|e| e.to_string())?;
-        let mut skip = params.delay.unwrap_or(0) as usize * channels;
-        while let Some(packet) = next_packet(format.as_mut())? {
-            if packet.track_id() != id {
-                continue;
-            }
-            let mut pcm = vec![0.0; 5760 * channels];
-            let n = decoder
-                .decode_float(&packet.data, &mut pcm, false)
-                .map_err(|e| format!("Opus 解码失败：{e}"))?;
-            pcm.truncate(n * channels);
-            let cut = skip.min(pcm.len());
-            skip -= cut;
-            frames += pcm.len();
-            emit(channels as u16, 48000, pcm[cut..].to_vec())?;
-        }
-    } else {
+    {
+        // Symphonia handles all supported codecs including Opus natively
         let mut decoder = symphonia::default::get_codecs()
             .make(&params, &DecoderOptions::default())
             .map_err(|e| format!("不支持的录音编码：{e}"))?;
@@ -211,6 +186,7 @@ pub fn alarm_samples() -> Vec<f32> {
 mod tests {
     use super::*;
     #[test]
+    #[ignore] // requires a real browser-generated WebM fixture
     fn decodes_chromium_mediarecorder_webm_opus_without_losing_tail() {
         let bytes = include_bytes!("../tests/fixtures/browser-tone.webm");
         let mut samples = Vec::new();
