@@ -237,6 +237,8 @@ public class MonitorService extends Service {
             threshold = configuredThreshold;
             prefs.edit().putString("threshold", String.valueOf(threshold)).apply();
         }
+        boolean warActive = root.optBoolean("warActive", false);
+        boolean captureWindow = root.optBoolean("captureWindowActive", true);
         boolean online = device.optBoolean("online", false);
         double current = device.optDouble("currentDb", Double.NaN);
         double average = device.optDouble("liveAvgDb", current);
@@ -252,7 +254,7 @@ public class MonitorService extends Service {
         String alertAt = alert == null ? "" : alert.optString("createdAt", "");
 
         if (!alertId.isEmpty() && !alertId.equals(lastAlertId)) {
-            if (isFresh(alertAt, FRESH_ALERT_MS)) {
+            if (!warActive && captureWindow && isFresh(alertAt, FRESH_ALERT_MS)) {
                 showOverLimitNotification(name, alertDb, alertMessage);
             }
             lastAlertId = alertId;
@@ -261,7 +263,7 @@ public class MonitorService extends Service {
                     .putString("last_alert_id", lastAlertId)
                     .putLong("last_fallback_at", lastFallbackAt)
                     .apply();
-        } else if (online && monitoring && !suspended && !ignoringSystem
+        } else if (!warActive && captureWindow && online && monitoring && !suspended && !ignoringSystem
                 && !Double.isNaN(average) && average >= threshold
                 && System.currentTimeMillis() - lastFallbackAt > FALLBACK_COOLDOWN_MS) {
             lastFallbackAt = System.currentTimeMillis();
@@ -272,6 +274,10 @@ public class MonitorService extends Service {
 
         if (!online) {
             updateServiceNotification("设备暂时离线 · 等待采集端重新连接");
+        } else if (warActive) {
+            updateServiceNotification("分贝战争进行中 · 本时段不触发噪声提醒");
+        } else if (!captureWindow && device.optBoolean("desiredMonitoring", false)) {
+            updateServiceNotification("计划待机 · 等待指定采集时段");
         } else if (!monitoring) {
             updateServiceNotification("采集已暂停 · 等待恢复");
         } else if (suspended || ignoringSystem) {

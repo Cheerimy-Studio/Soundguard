@@ -383,7 +383,7 @@ impl Store {
         let offline = crate::models::effective_settings(&settings, device).offline_timeout_secs;
         device.current_db = Some(crate::models::round1(request.current_db));
         device.live_avg_db = request.average_db.map(crate::models::round1);
-    device.live_rolling_15s_db = request.rolling_15s_db.map(crate::models::round1);
+        device.live_rolling_15s_db = request.rolling_15s_db.map(crate::models::round1);
         device.peak_db = request
             .peak_db
             .map(crate::models::round1)

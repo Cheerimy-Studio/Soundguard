@@ -48,3 +48,17 @@ jobs:
           java-version: '17'
       - working-directory: mobile/android
         run: bash gradlew --no-daemon assembleDebug
+
+  native-client:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup update stable --no-self-update
+      - run: python -m pip install "cmake>=3.20,<4"
+      - run: cargo check --locked --manifest-path client-native/Cargo.toml
+      - run: cargo test --locked --manifest-path client-native/Cargo.toml
+      - run: cargo build --release --locked --manifest-path client-native/Cargo.toml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: soundguard-native-windows-x64
+          path: client-native/target/release/soundguard-client-native.exe

@@ -437,7 +437,10 @@ impl Config {
             default_settings,
             env_overrides,
             nvidia_api_key: var("NVIDIA_API_KEY").unwrap_or_default(),
-            nvidia_bnr_function_id: var_or("NVIDIA_BNR_FUNCTION_ID", crate::nvidia_bnr::DEFAULT_FUNCTION_ID),
+            nvidia_bnr_function_id: var_or(
+                "NVIDIA_BNR_FUNCTION_ID",
+                crate::nvidia_bnr::DEFAULT_FUNCTION_ID,
+            ),
             smtp,
             ice_servers,
             cors_origins,

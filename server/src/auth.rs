@@ -114,7 +114,7 @@ impl CurrentUser {
     }
 
     pub fn can_access_device(&self, device_id: &str) -> bool {
-        self.is_super() || self.device_ids.iter().any(|id| id == device_id)
+        self.role.is_update_admin() || self.device_ids.iter().any(|id| id == device_id)
     }
 }
 

@@ -33,7 +33,10 @@ impl PasswordGuard {
                 self.locked_until = Some(now + Duration::from_secs(300));
                 return Err("密码错误过多，请 5 分钟后重试".into());
             }
-            return Err(format!("本地密码不正确，还可尝试 {} 次", 5 - self.failures));
+            return Err(format!(
+                "密码或验证码不正确，还可尝试 {} 次",
+                5 - self.failures
+            ));
         }
         self.failures = 0;
         self.authorized_until = Some(now + Duration::from_secs(300));

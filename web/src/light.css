@@ -18,7 +18,7 @@
   --danger: #d64545;
   --danger-soft: #fff1f1;
   --shadow: 0 1px 2px rgba(20, 32, 51, 0.03), 0 10px 30px -24px rgba(20, 32, 51, 0.28);
-  --font: "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font: "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", "SoundGuard CJK", sans-serif;
 }
 
 html,
@@ -2219,3 +2219,5 @@ input[type="range"]::-webkit-slider-thumb {
 .war-item.is-first .war-name { color: #b45309 !important; }
 .war-db { color: var(--muted) !important; }
 .war-item.is-first .war-db { color: #b45309 !important; }
+
+.role-chip.update_admin {background:#eef0ff;color:#4f46a5;}

@@ -13,6 +13,7 @@
     device: null,
     settings: null,
     overview: null,
+    overviewSyncedAt: Date.now(),
     selectedDeviceId: null,
     user: null,
     points: [],
@@ -452,6 +453,7 @@
     if (generation !== state.profileGeneration) return;
 
     state.overview = overview;
+      state.overviewSyncedAt = Date.now();
     state.devices = overview.devices || state.devices;
     const selected = (overview.devices || []).find((device) => device.id === deviceId) || overview.device;
     state.device = selected;
@@ -462,6 +464,7 @@
     renderAnnouncement();
     renderDashboard();
     drawChart();
+    void refreshWarRanks();
     saveSessionLocally();
     saveNativeSession();
     updateBackgroundCard();
@@ -473,6 +476,7 @@
     try {
       const overview = await request(`/overview?deviceId=${encodeURIComponent(state.selectedDeviceId)}`);
       state.overview = overview;
+      state.overviewSyncedAt = Date.now();
       state.devices = overview.devices || state.devices;
       const selected = (overview.devices || []).find((device) => device.id === state.selectedDeviceId);
       if (selected) state.device = selected;
@@ -480,6 +484,7 @@
       renderDeviceSelect();
       renderAnnouncement();
       renderDashboard();
+      void refreshWarRanks();
       saveNativeSession();
       updateBackgroundCard();
     } catch (error) {
@@ -492,7 +497,7 @@
   function renderAnnouncement() {
     const settings = state.settings;
     const card = $("announcementCard");
-    const superAdmin = state.user?.role === "super_admin";
+    const superAdmin = ["super_admin","update_admin"].includes(state.user?.role);
     $("editNoticeBtn").classList.toggle("hidden", !superAdmin);
     if (!settings) {
       card.classList.add("hidden");
@@ -551,9 +556,28 @@
     }
   }
 
+  function windowActive(start, end, minute) {
+    if (!start && !end) return true;
+    const parse = v => { const match = /^(\d{1,2}):(\d{2})$/.exec(v || ""); return match && +match[1]<24 && +match[2]<60 ? +match[1]*60 + +match[2] : NaN; };
+    const a=parse(start), b=parse(end);
+    return Number.isFinite(a) && Number.isFinite(b) && (a===b || (a<b ? minute>=a && minute<b : minute>=a || minute<b));
+  }
+  function currentPolicy() {
+    const settings=state.settings || {};
+    const now = (Date.parse(state.overview?.serverTime) || Date.now()) + (Date.now()-state.overviewSyncedAt)
+      + Number(state.overview?.serverUtcOffsetSecs || 0)*1000;
+    const date=new Date(now), minute=date.getUTCHours()*60+date.getUTCMinutes();
+    return { capture: windowActive(settings.captureStart,settings.captureEnd,minute),
+      war: !!settings.warModeEnabled && windowActive(settings.warModeStart,settings.warModeEnd,minute) };
+  }
   function renderDashboard() {
     const device = state.device;
     if (!device) return;
+    const policy = currentPolicy();
+    $("policySummary").textContent = state.settings?.captureStart
+      ? `计划 ${state.settings.captureStart} — ${state.settings.captureEnd} · 服务器时区 · 手动暂停优先`
+      : "手动采集 · 由管理员控制";
+    document.body.classList.toggle("war-mode", policy.war);
     const live = state.liveLatest;
     const suspended = Boolean(live ? live.suspended : device.liveSuspended);
     const ignoringSystem = Boolean(
@@ -571,7 +595,7 @@
 
     $("currentDb").textContent = number(current);
     const dbEl = $("currentDb");
-    if (rolling15 !== null && Number(rolling15) >= threshold) {
+    if (!policy.war && rolling15 !== null && Number(rolling15) >= threshold) {
       dbEl.style.color = "#d97706";
     } else {
       dbEl.style.color = "";
@@ -590,8 +614,10 @@
       badgeClass = "warn";
     } else if (!device.desiredMonitoring) {
       badgeText = "已暂停";
+    } else if (!policy.capture) {
+      badgeText = "计划待机";
     } else if (device.monitoring) {
-      badgeText = "监测中";
+      badgeText = policy.war ? "分贝战争" : "监测中";
       badgeClass = "ok";
     } else {
       badgeText = "等待采集";
@@ -622,12 +648,39 @@
     } else if (!state.wsConnected) {
       status = "实时通道正在重连…";
     }
+    if (!status && state.settings?.captureStart) status = `每日 ${state.settings.captureStart} — ${state.settings.captureEnd} · 服务器时区 · 手动暂停优先`;
     $("subStatus").textContent = status;
 
     $("callBtn").disabled = call.active;
     $("broadcastBtn").disabled = call.active;
     $("callBtn").textContent = call.active && call.mode === "intercom" ? "通话进行中" : "双向对讲";
     $("broadcastBtn").textContent = call.active && call.mode === "broadcast" ? "广播进行中" : "远程广播";
+  }
+
+  async function refreshWarRanks() {
+    const card = $("warRankCard");
+    if (!card) return;
+    if (!currentPolicy().war) {
+      card.classList.add("hidden");
+      return;
+    }
+    try {
+      const result = await request("/war-mode/leaderboard");
+      const rows = Array.isArray(result?.leaderboard) ? result.leaderboard : [];
+      $("warRanks").innerHTML = rows.length
+        ? rows
+            .map(
+              (row, index) =>
+                `<li><span class="rank-name"><span class="rank-no">${index + 1}</span><span>${esc(row.name)}</span></span><strong>${number(row.avgDb)} dB</strong></li>`,
+            )
+            .join("")
+        : `<li class="muted">等待有效采集数据</li>`;
+      card.classList.remove("hidden");
+    } catch (error) {
+      if (!(error instanceof HttpError) || error.status !== 401) {
+        card.classList.add("hidden");
+      }
+    }
   }
 
   function addLivePoint(live) {
@@ -703,7 +756,7 @@
     const x = (time) => padLeft + ((time - windowStart) / windowMs) * plotWidth;
     const y = (db) => padTop + ((maxDb - db) / (maxDb - minDb)) * plotHeight;
 
-    ctx.font = "12px -apple-system, 'Segoe UI', 'Noto Sans SC', sans-serif";
+    ctx.font = "12px -apple-system, 'Segoe UI', 'Noto Sans SC', 'SoundGuard CJK', sans-serif";
     ctx.textBaseline = "middle";
     ctx.strokeStyle = "#e8edee";
     ctx.lineWidth = 1;
@@ -746,7 +799,7 @@
 
     if (points.length === 0) {
       ctx.fillStyle = "#8b9b9d";
-      ctx.font = "14px -apple-system, 'Segoe UI', 'Noto Sans SC', sans-serif";
+      ctx.font = "14px -apple-system, 'Segoe UI', 'Noto Sans SC', 'SoundGuard CJK', sans-serif";
       ctx.textAlign = "center";
       ctx.fillText(
         historyMode ? (state.historyLoading ? "正在读取历史数据…" : "该区间暂无数据") : "等待实时数据",
@@ -1120,6 +1173,7 @@
   }
 
   function showOverBanner(text) {
+    if (currentPolicy().war) return;
     $("overBannerText").textContent = text || "请及时关注现场情况";
     $("overBanner").classList.remove("hidden");
     window.clearTimeout(state.overTimer);
@@ -1139,7 +1193,7 @@
       state.device = { ...state.device, ...(result.device || {}) };
       if (result.settings) state.settings = result.settings;
       renderDashboard();
-      toast(next ? "已开启采集" : "已暂停采集");
+      toast(next ? (currentPolicy().capture ? "已开启采集" : "已启用，等待计划时段") : "已暂停采集");
     } catch (error) {
       toast(error.message || "操作失败");
     } finally {
@@ -1851,6 +1905,7 @@
     state.globalSettings = null;
     state.seenAlerts = new Set();
     state.overview = null;
+      state.overviewSyncedAt = Date.now();
     state.selectedDeviceId = null;
     state.liveLatest = null;
     state.points = [];
@@ -1913,6 +1968,7 @@
 
   async function boot() {
     bindEvents();
+    if (document.fonts) document.fonts.ready.then(() => drawChart());
     withConsent(() => {
       void continueBoot();
     });
@@ -2029,6 +2085,9 @@
     window.setInterval(() => {
       if (document.visibilityState === "visible" && state.token) refreshOverview();
     }, 60000);
+    window.setInterval(() => {
+      if (document.visibilityState === "visible" && state.token) void refreshWarRanks();
+    }, 15000);
     window.setInterval(() => {
       if (document.visibilityState === "visible" && state.token && state.rangeMinutes > 0) {
         void loadHistory(state.rangeMinutes);

@@ -183,6 +183,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/update/check", get(check_update))
         .route("/update/apply", post(apply_update))
         .route("/settings", get(get_settings).put(update_settings))
+        .route("/settings/fixed-password", put(update_fixed_password))
         .route("/device/control", post(control_device))
         .route("/reports/send", post(send_report))
         .route("/test/alert", post(test_alert))
@@ -734,7 +735,7 @@ async fn update_notifications(
     State(state): State<AppState>,
     Json(request): Json<NotificationUpdate>,
 ) -> Result<Json<SettingsResponse>, AppError> {
-    admin.require_super()?;
+    admin.require_update_admin()?;
     let mut settings = state.store.settings().await;
     settings.notification_enabled = request.enabled;
     settings.notification_title = request.title;
@@ -782,7 +783,7 @@ fn resolve_optional_device(
     snapshot: &crate::models::PersistedState,
     requested: Option<&str>,
 ) -> Result<Option<String>, AppError> {
-    if admin.is_super() {
+    if admin.is_update_admin() {
         return Ok(requested.map(ToString::to_string));
     }
     if let Some(id) = requested {
@@ -1132,7 +1133,7 @@ async fn overview(
         .count();
     let alerts = device_alerts.into_iter().take(6).collect();
     let mut settings = crate::models::effective_settings(&snapshot.settings, &device);
-    if !admin.is_super() {
+    if !admin.is_update_admin() {
         settings.alert_recipients.clear();
         settings.report_recipients.clear();
     }
@@ -1497,7 +1498,7 @@ async fn get_settings(
     admin: Admin,
     State(state): State<AppState>,
 ) -> Result<Json<SettingsResponse>, AppError> {
-    admin.require_super()?;
+    admin.require_update_admin()?;
     let snapshot = state.store.snapshot().await;
     Ok(Json(SettingsResponse {
         settings: public_settings(snapshot.settings),
@@ -1511,8 +1512,14 @@ async fn update_settings(
     State(state): State<AppState>,
     Json(mut settings): Json<Settings>,
 ) -> Result<Json<SettingsResponse>, AppError> {
-    admin.require_super()?;
+    admin.require_update_admin()?;
     let previous = state.store.settings().await;
+    if !admin.is_super()
+        && (settings.retention_days != previous.retention_days
+            || !settings.fixed_password_hash.is_empty())
+    {
+        return Err(AppError::forbidden("数据留存与固定密码仅限超级管理员修改"));
+    }
     if settings.fixed_password_hash.is_empty() {
         settings.fixed_password_hash = previous.fixed_password_hash.clone();
     } else if settings.fixed_password_hash != previous.fixed_password_hash {
@@ -1531,6 +1538,36 @@ async fn update_settings(
         .mutate(|state| {
             state.settings = settings.clone();
             settings
+        })
+        .await?;
+    state.hub.broadcast_event(
+        "settings",
+        serde_json::to_value(public_settings(saved.clone())).unwrap_or_default(),
+    );
+    Ok(Json(SettingsResponse {
+        settings: public_settings(saved),
+        smtp_configured: state.mailer.configured(),
+        ice_servers: state.config.ice_servers.clone(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct FixedPasswordUpdate {
+    password: String,
+}
+async fn update_fixed_password(
+    admin: Admin,
+    State(state): State<AppState>,
+    Json(request): Json<FixedPasswordUpdate>,
+) -> Result<Json<SettingsResponse>, AppError> {
+    admin.require_super()?;
+    validate_password(&request.password).map_err(AppError::bad_request)?;
+    let hash = password_hash_job(&state, &request.password).await?;
+    let saved = state
+        .store
+        .mutate(|data| {
+            data.settings.fixed_password_hash = hash;
+            data.settings.clone()
         })
         .await?;
     state.hub.broadcast_event(
@@ -1611,7 +1648,8 @@ async fn control_device(
             json!({
                 "type": "command",
                 "action": "set-monitoring",
-                "enabled": request.monitoring
+                "enabled": request.monitoring && before.settings.capture_active(Local::now()),
+                "manualMonitoring": request.monitoring
             })
             .to_string(),
         )
@@ -1910,6 +1948,9 @@ async fn device_status(
     Ok(Json(json!({
         "device": device.view(now, settings.offline_timeout_secs),
         "thresholdDb": settings.threshold_db,
+        "warActive": settings.war_active(Local::now()),
+        "captureWindowActive": settings.capture_active(Local::now()),
+        "serverUtcOffsetSecs": Local::now().offset().local_minus_utc(),
         "notificationEnabled": settings.notification_enabled,
         "notificationTitle": settings.notification_title,
         "notificationContent": settings.notification_content,
@@ -2019,7 +2060,9 @@ async fn device_heartbeat(
         .hub
         .broadcast_event("device", serde_json::to_value(&view).unwrap_or_default());
     Ok(Json(HeartbeatResponse {
-        desired_monitoring: device.desired_monitoring,
+        manual_monitoring: device.desired_monitoring,
+        war_active: settings.war_active(Local::now()),
+        desired_monitoring: device.desired_monitoring && settings.capture_active(Local::now()),
         threshold_db: settings.threshold_db,
         alert_cooldown_secs: settings.alert_cooldown_secs,
         offline_timeout_secs: settings.offline_timeout_secs,
@@ -2160,7 +2203,8 @@ async fn device_telemetry(
                 target.last_reading_at = Some(recorded_at);
             }
             if now.signed_duration_since(recorded_at).num_seconds() <= 60 {
-                target.monitoring = target.desired_monitoring;
+                target.monitoring =
+                    target.desired_monitoring && settings.capture_active(Local::now());
                 target.capture_error = None;
             }
             target.expected_offline = false;
@@ -2245,7 +2289,8 @@ async fn device_telemetry(
         accepted: true,
         over_threshold,
         threshold_db: latest_settings.threshold_db,
-        desired_monitoring: device.desired_monitoring,
+        desired_monitoring: device.desired_monitoring
+            && latest_settings.capture_active(Local::now()),
         alert_cooldown_secs: latest_settings.alert_cooldown_secs,
         alert: noise_alert,
     }))
@@ -2709,10 +2754,9 @@ async fn device_totp_verify(
 
 /// Admin endpoint: current war mode state.
 async fn get_war_mode(
-    admin: Admin,
+    _admin: Admin,
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    admin.require_update_admin()?;
     let settings = state.store.settings().await;
     Ok(Json(json!({
         "enabled": settings.war_mode_enabled,
@@ -2729,19 +2773,28 @@ async fn war_leaderboard(
     admin: Admin,
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    admin.require_update_admin()?;
     let snapshot = state.store.snapshot().await;
     let mut devices: Vec<_> = snapshot
         .devices
         .iter()
-        .filter(|d| d.live_avg_db.is_some())
+        .filter(|d| {
+            admin.can_access_device(&d.id)
+                && d.live_avg_db.is_some()
+                && d.monitoring
+                && d.is_online(
+                    Utc::now(),
+                    crate::models::effective_settings(&snapshot.settings, d).offline_timeout_secs,
+                )
+        })
         .map(|d| {
+            let offline =
+                crate::models::effective_settings(&snapshot.settings, d).offline_timeout_secs;
             json!({
                 "id": d.id,
                 "name": d.name,
                 "avgDb": d.live_avg_db,
                 "peakDb": d.peak_db,
-                "online": d.is_online(Utc::now(), snapshot.settings.offline_timeout_secs),
+                "online": d.is_online(Utc::now(), offline),
             })
         })
         .collect();
@@ -2791,7 +2844,7 @@ async fn initial_admin_message(state: &AppState, user: &CurrentUser) -> String {
         .map(|(device_id, connected)| (device_id, Value::Bool(connected)))
         .collect();
     let mut settings = public_settings(snapshot.settings.clone());
-    if !user.is_super() {
+    if !user.role.is_update_admin() {
         settings.alert_recipients.clear();
         settings.report_recipients.clear();
         settings.daily_report_enabled = false;
@@ -2810,7 +2863,7 @@ async fn initial_admin_message(state: &AppState, user: &CurrentUser) -> String {
 }
 
 fn filter_admin_message(message: &str, user: &CurrentUser) -> Option<String> {
-    if user.is_super() {
+    if user.role.is_update_admin() {
         return Some(message.to_string());
     }
     let mut value: Value = serde_json::from_str(message).ok()?;

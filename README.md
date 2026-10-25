@@ -1,3 +1,5 @@
+> 本轮界面、密码关闭保护、角色权限与跨端计划任务修复见 [FIX_ROUND2.md](FIX_ROUND2.md)。Win7 继续使用 `client-win7`。
+
 # 声垣 SoundGuard · 智能分贝监测与远程对讲系统
 
 本次修复的范围、验证结果与升级步骤见 [FIX_RELEASE.md](FIX_RELEASE.md)。

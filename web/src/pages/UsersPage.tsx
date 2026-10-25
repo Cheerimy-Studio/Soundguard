@@ -12,6 +12,7 @@ import {
   X,
 } from "lucide-react";
 import { api } from "../api";
+import { roleLabels, rolePermissions } from "../lib/permissions";
 import type { Device, User, UserRole } from "../types";
 
 interface UsersPageProps {
@@ -32,6 +33,7 @@ interface UserForm {
 }
 
 export function UsersPage({ devices, currentUser, onNotify }: UsersPageProps) {
+  const canEdit = currentUser.role === "super_admin";
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState<UserForm | null>(null);
@@ -96,7 +98,7 @@ export function UsersPage({ devices, currentUser, onNotify }: UsersPageProps) {
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (!form || busy) return;
+    if (!form || busy || !canEdit) return;
     setBusy(true);
     setError("");
     try {
@@ -106,7 +108,7 @@ export function UsersPage({ devices, currentUser, onNotify }: UsersPageProps) {
           email: form.email.trim(),
           password: form.password,
           role: form.role,
-          deviceIds: form.role === "super_admin" ? [] : form.deviceIds,
+          deviceIds: form.role === "device_admin" ? form.deviceIds : [],
         });
         onNotify("用户已创建", "success");
       } else if (form.user) {
@@ -114,7 +116,7 @@ export function UsersPage({ devices, currentUser, onNotify }: UsersPageProps) {
           username: form.username.trim(),
           email: form.email.trim(),
           role: form.role,
-          deviceIds: form.role === "super_admin" ? [] : form.deviceIds,
+          deviceIds: form.role === "device_admin" ? form.deviceIds : [],
           disabled: form.disabled,
           password: form.password ? form.password : undefined,
         });
@@ -130,6 +132,7 @@ export function UsersPage({ devices, currentUser, onNotify }: UsersPageProps) {
   }
 
   async function remove(user: User) {
+    if (!canEdit) return;
     if (!window.confirm(`确定删除用户「${user.username}」吗？`)) return;
     try {
       await api.deleteUser(user.id);
@@ -147,7 +150,7 @@ export function UsersPage({ devices, currentUser, onNotify }: UsersPageProps) {
           <div className="eyebrow">角色与权限</div>
           <h2>管理后台账号</h2>
           <p>
-            超级管理员可以管理设备接入、全局设置和用户；设备管理员只能查看和操作分配给自己的设备的监测数据与对讲，不能新增、修改或删除设备，也不能修改全局设置和用户。
+            按职责选择角色，再分配设备。运营管理员负责全部设备和日常运行策略；账号授权与敏感设置由超级管理员维护。
           </p>
         </div>
         <div className="users-hero-actions">
@@ -155,13 +158,21 @@ export function UsersPage({ devices, currentUser, onNotify }: UsersPageProps) {
             <RefreshCw size={15} />
             刷新
           </button>
-          <button type="button" className="primary-button" onClick={openCreate}>
+          {canEdit && <button type="button" className="primary-button" onClick={openCreate}>
             <Plus size={15} />
             添加用户
-          </button>
+          </button>}
         </div>
       </section>
 
+      <section className="panel permission-panel">
+        <h3>角色权限一览</h3>
+        <div className="permission-table-wrap"><table className="permission-table">
+          <thead><tr><th>操作范围</th><th>超级管理员</th><th>运营管理员</th><th>设备管理员</th></tr></thead>
+          <tbody>{rolePermissions.map(row => <tr key={row.label}><th>{row.label}</th>{row.values.map((v,i)=><td key={i}>{v}</td>)}</tr>)}</tbody>
+        </table></div>
+        {!canEdit && <p className="inline-note">当前账号可以查看权限，创建、编辑和删除账号需由超级管理员操作。</p>}
+      </section>
       <section className="panel users-list-panel">
         <div className="panel-header">
           <div>
@@ -186,22 +197,22 @@ export function UsersPage({ devices, currentUser, onNotify }: UsersPageProps) {
                     <strong>{user.username}</strong>
                     {user.id === currentUser.id && <span className="self-chip">当前账号</span>}
                     <span className={`role-chip ${user.role}`}>
-                      {user.role === "super_admin" ? "超级管理员" : "设备管理员"}
+                      {roleLabels[user.role]}
                     </span>
                     {user.disabled && <span className="disabled-chip">已停用</span>}
                   </div>
                   <div className="user-meta">
                     {user.email || "未设置接收邮箱"}
                     {" · "}
-                    {user.role === "super_admin"
-                      ? "全部设备与系统设置"
+                    {user.role !== "device_admin"
+                      ? "全部设备"
                       : user.deviceIds.length > 0
                         ? user.deviceIds.map((id) => deviceNames.get(id) ?? id).join("、")
                         : "尚未分配设备"}
                     {user.lastLoginAt ? ` · 最近登录 ${new Date(user.lastLoginAt).toLocaleString("zh-CN", { hour12: false })}` : ""}
                   </div>
                 </div>
-                <div className="user-actions">
+                {canEdit && <div className="user-actions">
                   <button type="button" className="ghost-button small" onClick={() => openEdit(user)}>
                     <Pencil size={13} />
                     编辑
@@ -216,14 +227,14 @@ export function UsersPage({ devices, currentUser, onNotify }: UsersPageProps) {
                       删除
                     </button>
                   )}
-                </div>
+                </div>}
               </article>
             ))}
           </div>
         )}
       </section>
 
-      {form && (
+      {form && canEdit && (
         <div className="modal-overlay" role="dialog" aria-modal="true">
           <form className="modal-panel access-modal user-form" onSubmit={submit}>
             <div className="modal-panel-head">
@@ -274,12 +285,12 @@ export function UsersPage({ devices, currentUser, onNotify }: UsersPageProps) {
             </label>
 
             <label className="form-field">
-              <span>角色</span>
+              <span>角色与操作范围</span>
               <select
                 value={form.role}
                 onChange={(event) => setForm({ ...form, role: event.target.value as UserRole })}
               >
-                <option value="update_admin">更新管理员</option>
+                <option value="update_admin">运营管理员</option>
               <option value="device_admin">设备管理员</option>
                 <option value="super_admin">超级管理员</option>
               </select>

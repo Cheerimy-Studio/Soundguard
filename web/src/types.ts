@@ -140,6 +140,7 @@ export interface Overview {
   alertCountToday: number;
   smtpConfigured: boolean;
   serverTime: string;
+  serverUtcOffsetSecs?: number;
   iceServers: RTCIceServer[];
   signalingConnected: boolean;
 }
@@ -192,6 +193,7 @@ export interface SnapshotPayload {
   devices: Device[];
   settings: Settings;
   serverTime: string;
+  serverUtcOffsetSecs?: number;
   signaling: Record<string, boolean>;
 }
 

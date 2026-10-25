@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   AudioWaveform,
@@ -34,6 +34,7 @@ interface SettingsPageProps {
   overview: Overview;
   deviceId: string;
   isSuper: boolean;
+  canConfigure: boolean;
   onSave: (settings: Settings) => Promise<Settings>;
   onNotify: (message: string, tone?: "success" | "error" | "info") => void;
 }
@@ -87,7 +88,7 @@ function splitEmails(raw: string): { valid: string[]; invalid: string[] } {
   return { valid: [...new Set(valid)], invalid };
 }
 
-export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: SettingsPageProps) {
+export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave, onNotify }: SettingsPageProps) {
   const [baseline, setBaseline] = useState<Settings>(overview.settings);
   const [form, setForm] = useState<Settings>(overview.settings);
   const [policyDeviceId, setPolicyDeviceId] = useState<string>(deviceId || overview.device.id);
@@ -95,6 +96,8 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
     policyFromDevice(overview.settings, overview.devices.find((d) => d.id === (deviceId || overview.device.id))?.settings),
   );
   const [policySaving, setPolicySaving] = useState(false);
+  const policyEditing=useRef(false);
+  const policyBound=useRef(policyDeviceId);
   const [nvidiaConfigured, setNvidiaConfigured] = useState<boolean | null>(null);
   const [nvidiaMasked, setNvidiaMasked] = useState("");
   const [nvidiaInput, setNvidiaInput] = useState("");
@@ -118,12 +121,17 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
     );
   }, [overview.devices]);
 
+  const policySource = JSON.stringify(overview.devices.find(d => d.id === policyDeviceId)?.settings ?? {});
   useEffect(() => {
     if (!policyDeviceId) return;
     const device = overview.devices.find((d) => d.id === policyDeviceId);
     if (!device) return;
-    setPolicy(policyFromDevice(overview.settings, device.settings));
-  }, [policyDeviceId, overview.devices, overview.settings]);
+    if (policyBound.current !== policyDeviceId) {
+      policyBound.current=policyDeviceId;
+      policyEditing.current=false;
+    }
+    if (!policyEditing.current) setPolicy(policyFromDevice(baseline, device.settings));
+  }, [policyDeviceId, policySource, baseline]);
 
   useEffect(() => {
     if (!isSuper) return;
@@ -137,6 +145,7 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
   }, [isSuper]);
 
   useEffect(() => {
+    if (!canConfigure) return;
     let cancelled = false;
     api
       .settings()
@@ -151,7 +160,7 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [canConfigure]);
 
   const alertParsed = useMemo(() => splitEmails(alertEmails), [alertEmails]);
   const reportParsed = useMemo(() => splitEmails(reportEmails), [reportEmails]);
@@ -176,7 +185,7 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
   }
 
   async function save() {
-    if (saving) return;
+    if (saving || !canConfigure) return;
     if (alertParsed.invalid.length > 0 || reportParsed.invalid.length > 0) {
       setFormError(
         `邮箱格式不正确：${[...alertParsed.invalid, ...reportParsed.invalid].join("、")}`,
@@ -205,14 +214,17 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
   }
 
   function updatePolicy<K extends keyof PolicyValues>(key: K, value: PolicyValues[K]) {
+    policyEditing.current=true;
     setPolicy((previous) => ({ ...previous, values: { ...previous.values, [key]: value } }));
   }
 
   function toggleFollow(key: keyof PolicyFollow, follow: boolean) {
+    policyEditing.current=true;
     setPolicy((previous) => ({ ...previous, follow: { ...previous.follow, [key]: follow } }));
   }
 
   function resetPolicy() {
+    policyEditing.current=false;
     const device = overview.devices.find((d) => d.id === policyDeviceId);
     if (device) setPolicy(policyFromDevice(baseline, device.settings));
   }
@@ -227,6 +239,10 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
         offlineTimeoutSecs: policy.follow.offlineTimeoutSecs ? null : policy.values.offlineTimeoutSecs,
         autoRecordEvidence: policy.follow.autoRecordEvidence ? null : policy.values.autoRecordEvidence,
       });
+      if (policyBound.current === updated.id) {
+        policyEditing.current=false;
+        setPolicy(policyFromDevice(baseline,updated.settings));
+      }
       onNotify(`设备策略已保存：${updated.name}`, "success");
     } catch (error) {
       onNotify(error instanceof Error ? error.message : "设备策略保存失败", "error");
@@ -271,11 +287,12 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
   }
 
   async function saveFixedPassword() {
-    if (fixedPasswordSaving) return;
+    if (fixedPasswordSaving || !isSuper) return;
     setFixedPasswordSaving(true);
     try {
-      const settings = { ...form, fixedPasswordHash: fixedPasswordInput.trim() };
-      await onSave(settings);
+      const saved = (await api.setFixedPassword(fixedPasswordInput)).settings;
+      setBaseline(saved);
+      setForm(previous => ({ ...previous, fixedPasswordHash: saved.fixedPasswordHash }));
       setFixedPasswordInput("");
       onNotify("固定密码已保存", "success");
     } catch (error) {
@@ -337,20 +354,20 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
         <div>
           <h2>告警与运行策略</h2>
           <p>
-            {isSuper
+            {canConfigure
               ? "先调整全局默认，再选择具体节点覆盖独立策略；修改会在下一次客户端心跳时同步。"
               : "选择你负责的节点，调整该设备的独立策略；全局默认由超级管理员维护。"}
           </p>
         </div>
         <div className="settings-top-actions">
-          {isSuper && dirty && <span className="unsaved-chip">有未保存的更改</span>}
-          {isSuper && (
+          {canConfigure && dirty && <span className="unsaved-chip">有未保存的更改</span>}
+          {canConfigure && (
             <button type="button" className="ghost-button" onClick={reset} disabled={saving}>
               <RotateCcw size={15} />
               重置
             </button>
           )}
-          {isSuper && (
+          {canConfigure && (
             <button type="button" className="primary-button" onClick={() => void save()} disabled={saving}>
               {saving ? <LoaderCircle size={15} className="spin" /> : <Save size={15} />}
               {saving ? "正在保存" : "保存全局默认"}
@@ -359,6 +376,12 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
         </div>
       </div>
 
+      <nav className="settings-section-nav" aria-label="设置分区">
+        <a href="#device-policy">设备策略</a>
+        {canConfigure && <><a href="#war-policy">分贝战争</a><a href="#schedule-policy">计划任务</a></>}
+        {isSuper && <a href="#password-policy">操作保护</a>}
+        <span>{canConfigure ? "全局策略对所有客户端生效" : "仅可修改已分配设备的独立策略"}</span>
+      </nav>
       {formError && (
         <div className="settings-error">
           <AlertTriangle size={16} />
@@ -368,7 +391,8 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
 
       <div className="settings-grid">
         <div className="settings-main">
-          <section className="panel settings-card">
+          <section id="device-policy" className="panel settings-card">
+<fieldset className="policy-fieldset" disabled={policySaving}>
             <div className="settings-card-head">
               <div className="settings-icon cyan"><SlidersHorizontal size={18} /></div>
               <div>
@@ -524,17 +548,17 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
                 </div>
               </>
             )}
-          </section>
+          </fieldset></section>
 
           <section className="panel settings-card">
             <div className="settings-card-head">
               <div className="settings-icon cyan"><SlidersHorizontal size={18} /></div>
               <div>
-                <h3>{isSuper ? "全局默认 · 分贝告警阈值" : "分贝告警阈值（全局默认，只读）"}</h3>
+                <h3>{canConfigure ? "全局默认 · 分贝告警阈值" : "分贝告警阈值（全局默认，只读）"}</h3>
                 <p>客户端每 30 秒计算一次平均分贝，达到阈值即生成告警并发送邮件。</p>
               </div>
             </div>
-            {isSuper ? (
+            {canConfigure ? (
               <div className="threshold-editor">
                 <div className="threshold-value">
                   <strong>{form.thresholdDb.toFixed(1)}</strong>
@@ -583,7 +607,7 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
             </div>
           </section>
 
-          <section className="panel settings-card">
+          {canConfigure && (<section className="panel settings-card">
             <div className="settings-card-head">
               <div className="settings-icon cyan"><AudioWaveform size={18} /></div>
               <div>
@@ -629,9 +653,9 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
               <Volume2 size={13} />
               降噪在采集端本地完成，不改变证据的存储与加密方式；切换模式会重新开始 30 秒测量窗口。
             </div>
-          </section>
+          </section>)}
 
-          {isSuper && (
+          {canConfigure && (
 <section className="panel settings-card">
             <div className="settings-card-head">
               <div className="settings-icon amber"><Mail size={18} /></div>
@@ -701,7 +725,7 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
           </section>
 )}
 
-          {isSuper && (
+          {canConfigure && (
 <section className="panel settings-card">
             <div className="settings-card-head">
               <div className="settings-icon amber"><Megaphone size={18} /></div>
@@ -747,7 +771,7 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
           </section>
 )}
 
-          {isSuper && (
+          {canConfigure && (
 <section className="panel settings-card">
             <div className="settings-card-head">
               <div className="settings-icon emerald"><Send size={18} /></div>
@@ -790,7 +814,7 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
           </section>
 )}
 
-          {isSuper && (
+          {canConfigure && (
 <section className="panel settings-card">
             <div className="settings-card-head">
               <div className="settings-icon rose"><ShieldCheck size={18} /></div>
@@ -831,6 +855,7 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
                 <span>数据保留</span>
                 <select
                   value={form.retentionDays}
+                  disabled={!isSuper}
                   onChange={(event) => update("retentionDays", Number(event.target.value))}
                 >
                   <option value={7}>7 天</option>
@@ -839,7 +864,7 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
                   <option value={180}>180 天</option>
                   <option value={365}>365 天</option>
                 </select>
-                <small>过期 JSON 遥测文件自动清理</small>
+                <small>过期遥测、告警和音频自动清理；仅超级管理员可修改</small>
               </label>
             </div>
             <div className="inline-note">
@@ -849,7 +874,7 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
           </section>
 )}
 
-                    <section className="panel settings-card">
+                    {isSuper && (<section className="panel settings-card">
             <div className="settings-card-head">
               <div className="settings-icon rose"><CloudCog size={18} /></div>
               <div>
@@ -884,9 +909,9 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
             <div className="inline-note">
               云端调用失败会自动重试 3 次；降噪结果缓存在本地服务端（加密存储），重复试听不再计费。
             </div>
-          </section>
+          </section>)}
 
-          <section className="panel settings-card">
+          {canConfigure && (<section className="panel settings-card">
             <div className="settings-card-head">
               <div className="settings-icon emerald"><RefreshCw size={18} /></div>
               <div>
@@ -915,7 +940,7 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
                 {updateLoading ? <LoaderCircle size={14} className="spin" /> : <RefreshCw size={14} />}
                 检查更新
               </button>
-              {updateCheck?.updateAvailable && (
+              {isSuper && updateCheck?.updateAvailable && (
                 <button type="button" className="primary-button" onClick={() => void applyServerUpdate()} disabled={updateApplying}>
                   {updateApplying ? <LoaderCircle size={14} className="spin" /> : <Download size={14} />}
                   {updateApplying ? "正在更新…" : "一键更新"}
@@ -927,9 +952,9 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
                 </a>
               )}
             </div>
-          </section>
+          </section>)}
 
-          <section className="panel settings-card">
+          {canConfigure && (<section id="war-policy" className="panel settings-card">
             <div className="settings-card-head">
               <div className="settings-icon amber"><Megaphone size={18} /></div>
               <div>
@@ -957,10 +982,10 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
                 <input type="time" value={form.warModeEnd} onChange={(e) => update("warModeEnd", e.target.value)} disabled={!form.warModeEnabled} />
               </label>
             </div>
-            <div className="inline-note">非指定时段自动恢复普通模式。客户端切换到分贝战争需要 2FA 验证码或固定密码。</div>
-          </section>
+            <div className="inline-note">非指定时段自动恢复普通模式。由服务端统一下发，原生端、Win7 和 APP 使用同一时段；不改变原始测量值。</div>
+          </section>)}
 
-          <section className="panel settings-card">
+          {canConfigure && (<section id="schedule-policy" className="panel settings-card">
             <div className="settings-card-head">
               <div className="settings-icon cyan"><Clock3 size={18} /></div>
               <div>
@@ -978,15 +1003,15 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
                 <input type="time" value={form.captureEnd} onChange={(e) => update("captureEnd", e.target.value)} />
               </label>
             </div>
-            <div className="inline-note">客户端每次心跳（10 秒）会同步采集状态，无需手动干预。</div>
-          </section>
+            <div className="inline-note">每日重复，可跨午夜；相同时间表示全天，结束时间不包含在时段内。手动暂停优先，重新开启后仍需处于计划时段。客户端最迟在下次心跳同步（约 10 秒）。</div>
+          </section>)}
 
-          <section className="panel settings-card">
+          {isSuper && (<section id="password-policy" className="panel settings-card">
             <div className="settings-card-head">
               <div className="settings-icon rose"><KeyRound size={18} /></div>
               <div>
                 <h3>固定操作密码</h3>
-                <p>设置后客户端可用固定密码替代 2FA 动态验证码进行本地验证（适合无法联网的场景）。留空则仅使用 2FA。</p>
+                <p>固定密码由服务端联网验证，本地密码可离线使用。此处留空保持已有密码；密码首尾空格会保留。</p>
               </div>
             </div>
             <div className="field-grid">
@@ -1002,14 +1027,14 @@ export function SettingsPage({ overview, deviceId, isSuper, onSave, onNotify }: 
               </label>
             </div>
             <div className="mail-actions">
-              <button type="button" className="primary-button" onClick={() => void saveFixedPassword()} disabled={fixedPasswordSaving || !fixedPasswordInput.trim()}>
+              <button type="button" className="primary-button" onClick={() => void saveFixedPassword()} disabled={fixedPasswordSaving || !fixedPasswordInput}>
                 {fixedPasswordSaving ? <LoaderCircle size={14} className="spin" /> : <Save size={14} />}
                 保存固定密码
               </button>
             </div>
-          </section>
+          </section>)}
 
-{isSuper && (
+{canConfigure && (
 <section className="panel settings-card">
             <div className="settings-card-head">
               <div className="settings-icon violet"><Mic2 size={18} /></div>

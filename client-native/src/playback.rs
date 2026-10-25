@@ -113,6 +113,15 @@ impl AudioOutput {
 }
 pub fn decode_file(
     bytes: Vec<u8>,
+    emit: impl FnMut(u16, u32, Vec<f32>) -> Result<(), String>,
+) -> Result<(), String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        decode_file_inner(bytes, emit)
+    }))
+    .map_err(|_| "录音容器损坏，无法安全解码".to_string())?
+}
+fn decode_file_inner(
+    bytes: Vec<u8>,
     mut emit: impl FnMut(u16, u32, Vec<f32>) -> Result<(), String>,
 ) -> Result<(), String> {
     use symphonia::core::{
@@ -140,8 +149,42 @@ pub fn decode_file(
     let id = track.id;
     let params = track.codec_params.clone();
     let mut frames = 0;
-    {
-        // Symphonia handles all supported codecs including Opus natively
+    if params.codec == CODEC_TYPE_OPUS {
+        // Symphonia demuxes WebM/Ogg; libopus decodes their Opus packets.
+        let channels = params.channels.map(|c| c.count()).unwrap_or(1);
+        let mode = match channels {
+            1 => opus::Channels::Mono,
+            2 => opus::Channels::Stereo,
+            _ => return Err("只支持单声道或双声道 Opus 录音".into()),
+        };
+        let header = params.extra_data.as_deref().unwrap_or(&[]);
+        if header.starts_with(b"OpusHead") && (header.len() < 19 || header[18] != 0) {
+            return Err("不支持此 Opus 通道映射".into());
+        }
+        let mut skip = if header.starts_with(b"OpusHead") && header.len() >= 12 {
+            u16::from_le_bytes([header[10], header[11]]) as usize
+        } else {
+            params.delay.unwrap_or(0) as usize
+        };
+        let mut decoder =
+            opus::Decoder::new(48000, mode).map_err(|e| format!("Opus 初始化失败：{e}"))?;
+        let mut buffer = vec![0.0_f32; 5760 * channels];
+        while let Some(packet) = next_packet(format.as_mut())? {
+            if packet.track_id() != id {
+                continue;
+            }
+            let n = decoder
+                .decode_float(&packet.data, &mut buffer, false)
+                .map_err(|e| format!("Opus 录音损坏：{e}"))?;
+            let trim = skip.min(n);
+            skip -= trim;
+            let pcm = &buffer[trim * channels..n * channels];
+            if !pcm.is_empty() {
+                frames += pcm.len();
+                emit(channels as u16, 48000, pcm.to_vec())?;
+            }
+        }
+    } else {
         let mut decoder = symphonia::default::get_codecs()
             .make(&params, &DecoderOptions::default())
             .map_err(|e| format!("不支持的录音编码：{e}"))?;
@@ -186,8 +229,7 @@ pub fn alarm_samples() -> Vec<f32> {
 mod tests {
     use super::*;
     #[test]
-    #[ignore] // requires a real browser-generated WebM fixture
-    fn decodes_chromium_mediarecorder_webm_opus_without_losing_tail() {
+    fn decodes_webm_opus_without_losing_tail() {
         let bytes = include_bytes!("../tests/fixtures/browser-tone.webm");
         let mut samples = Vec::new();
         let mut channels = 0;
@@ -209,6 +251,9 @@ mod tests {
     #[test]
     fn rejects_non_audio_instead_of_silent_success() {
         assert!(decode_file(b"{broken}".to_vec(), |_, _, _| Ok(())).is_err());
+        let mut malformed = vec![0; 132];
+        malformed[..4].copy_from_slice(&[0x1a, 0x45, 0xdf, 0xa3]);
+        assert!(decode_file(malformed, |_, _, _| Ok(())).is_err());
     }
 }
 

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { graphic } from "echarts";
 import type { EChartsOption } from "echarts";
 import {
@@ -13,6 +13,8 @@ import {
   Wifi,
   WifiOff,
 } from "lucide-react";
+import { api } from "../api";
+import { policyState } from "../lib/policy";
 import type { Alert, Overview, Reading } from "../types";
 import type { IntercomController } from "../hooks/useIntercom";
 import { EChart } from "../components/EChart";
@@ -66,9 +68,22 @@ export function OverviewPage({
     ? null
     : device.liveAvgDb ?? device.currentDb;
   const peak = device.liveSuspended || ignoringSystem ? null : device.peakDb;
-  const over = average !== null && average >= threshold;
+  const clockAnchor = useRef({ server: overview.serverTime, received: Date.now() });
+  if (clockAnchor.current.server !== overview.serverTime) clockAnchor.current = { server: overview.serverTime, received: Date.now() };
+  const policyTime = new Date(Date.parse(overview.serverTime) + Date.now() - clockAnchor.current.received).toISOString();
+  const policy = policyState(settings, policyTime, overview.serverUtcOffsetSecs);
+  const [ranks, setRanks] = useState<Array<{id:string;name:string;avgDb:number|null}>>([]);
+  useEffect(() => {
+    setRanks([]);
+    if (!policy.war) return;
+    let cancelled=false;
+    const refresh=()=>api.warLeaderboard().then(result=>{if(!cancelled)setRanks(result.leaderboard);}).catch(()=>{if(!cancelled)setRanks([]);});
+    void refresh(); const timer=window.setInterval(()=>void refresh(),10000);
+    return ()=>{cancelled=true;window.clearInterval(timer);};
+  },[policy.war,device.id]);
+  const over = !policy.war && average !== null && average >= threshold;
   const rollingOver15s =
-    device.liveRolling15sDb !== null && device.liveRolling15sDb >= threshold;
+    !policy.war && device.liveRolling15sDb !== null && device.liveRolling15sDb >= threshold;
   const selectedSignaling = signalingConnected;
 
   const chartReadings = useMemo(() => {
@@ -221,6 +236,14 @@ export function OverviewPage({
 
   return (
     <div className="dashboard-page">
+      <section className={`policy-status-strip ${policy.war ? "is-war" : ""}`} aria-live="polite">
+        <span><strong>{policy.war ? "分贝战争进行中" : "日常监测"}</strong>{policy.war ? " · 本时段不触发噪声告警" : " · 按设备阈值告警"}</span>
+        <span>{settings.captureStart ? `计划 ${settings.captureStart} — ${settings.captureEnd} · ${!device.desiredMonitoring ? "手动暂停" : policy.capture ? "时段内" : "等待计划时段"}` : "采集由管理员手动控制"}</span>
+      </section>
+      {policy.war && <section className="panel war-rank-panel"><h3>分贝战争 · 当前排名</h3><p>仅显示权限内在线且正在采集的设备</p>
+        {ranks.length ? <ol>{ranks.map(row=><li key={row.id}><span>{row.name}</span><strong>{row.avgDb?.toFixed(1) ?? "--"} dB</strong></li>)}</ol> : <p>等待有效采集数据</p>}
+      </section>}
+
       <section className="dash-card dash-live">
         <div className="dash-head">
           <div>

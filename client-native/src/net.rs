@@ -15,6 +15,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 #[serde(rename_all = "camelCase", default)]
 pub struct Policy {
     pub desired_monitoring: bool,
+    pub manual_monitoring: Option<bool>,
     pub threshold_db: f64,
     pub alert_cooldown_secs: u64,
     pub auto_record_evidence: bool,
@@ -39,6 +40,7 @@ impl Default for Policy {
     fn default() -> Self {
         Self {
             desired_monitoring: true,
+            manual_monitoring: None,
             threshold_db: 65.0,
             alert_cooldown_secs: 120,
             auto_record_evidence: true,
@@ -61,23 +63,7 @@ impl Default for Policy {
         }
     }
 }
-pub fn within_window(start: &str, end: &str, minute: u32) -> bool {
-    if start.is_empty() && end.is_empty() {
-        return true;
-    }
-    let parse = |s: &str| -> Option<u32> {
-        let (h, m) = s.split_once(':')?;
-        let h: u32 = h.parse().ok()?;
-        let m: u32 = m.parse().ok()?;
-        (h < 24 && m < 60).then_some(h * 60 + m)
-    };
-    match (parse(start), parse(end)) {
-        (Some(a), Some(b)) if a < b => minute >= a && minute < b,
-        (Some(a), Some(b)) if a > b => minute >= a || minute < b,
-        (Some(_), Some(_)) => true,
-        _ => false,
-    }
-}
+pub use crate::schedule::within_window;
 impl Policy {
     pub fn minute(&self) -> u32 {
         let now = self.server_time.unwrap_or_else(Utc::now)
@@ -89,7 +75,7 @@ impl Policy {
             && within_window(&self.war_mode_start, &self.war_mode_end, self.minute())
     }
     pub fn capturing(&self) -> bool {
-        self.desired_monitoring
+        self.manual_monitoring.unwrap_or(self.desired_monitoring)
             && within_window(&self.capture_start, &self.capture_end, self.minute())
     }
 }
@@ -371,7 +357,7 @@ async fn run(
            match incoming{
              Some(Ok(Message::Text(text)))=>{if let Ok(v)=serde_json::from_str::<Value>(&text){let id=v["callId"].as_str().unwrap_or("");match v["type"].as_str().unwrap_or(""){
                "hangup"=>{if call.as_ref().is_some_and(|s|s.call_id==id)||pending.as_ref().is_some_and(|(s,_)|s["callId"]==id){end_call!();}},
-               "command"=>{if v["action"]=="set-monitoring"{policy.desired_monitoring=v["enabled"].as_bool().unwrap_or(false);}},
+               "command"=>{if v["action"]=="set-monitoring"{policy.desired_monitoring=v["enabled"].as_bool().unwrap_or(false);policy.manual_monitoring=v["manualMonitoring"].as_bool();}},
                "signal"=>match v["payload"]["kind"].as_str().unwrap_or(""){
                  "offer"=>{if call.is_some()||pending.is_some(){let _=signals.send(json!({"type":"signal","callId":id,"payload":{"kind":"reject","reason":"busy"}}));}else if auto_answer{let _=signals.send(json!({"internalAccept":v}));}else{state.lock().unwrap().incoming=Some(v.clone());pending=Some((v,Instant::now()));}},
                  "ice"=>{if let Some(s)=call.as_ref().filter(|s|s.call_id==id){if let Ok(candidate)=serde_json::from_value(v["payload"]["candidate"].clone()){let _=s.peer.add_ice_candidate(candidate).await;}}else if early_ice.len()<8{let q=early_ice.entry(id.to_string()).or_default();if q.len()<64{q.push(v["payload"]["candidate"].clone());}}},_=>{}
@@ -394,6 +380,25 @@ async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn raw_manual_switch_survives_out_of_window_effective_response() {
+        let mut policy = Policy {
+            desired_monitoring: false,
+            manual_monitoring: Some(true),
+            capture_start: "07:00".into(),
+            capture_end: "08:00".into(),
+            server_utc_offset_secs: 8 * 3600,
+            server_time: Some(
+                chrono::DateTime::parse_from_rfc3339("2026-10-25T23:30:00Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            ),
+            ..Policy::default()
+        };
+        assert!(policy.capturing());
+        policy.manual_monitoring = Some(false);
+        assert!(!policy.capturing());
+    }
     #[test]
     fn schedule_boundaries() {
         assert!(within_window("22:00", "06:00", 23 * 60));

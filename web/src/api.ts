@@ -316,6 +316,10 @@ export const api = {
     });
   },
 
+  setFixedPassword(password: string): Promise<SettingsResponse> {
+    return request<SettingsResponse>("/settings/fixed-password", { method: "PUT", body: JSON.stringify({ password }) });
+  },
+
   controlDevice(monitoring: boolean, deviceId: string): Promise<DeviceControlResponse> {
     return request<DeviceControlResponse>("/device/control", {
       method: "POST",

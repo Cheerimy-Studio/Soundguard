@@ -72,6 +72,15 @@ impl Settings {
                 now.hour() * 60 + now.minute(),
             )
     }
+    pub fn capture_active(&self, now: chrono::DateTime<chrono::Local>) -> bool {
+        use chrono::Timelike;
+        (self.capture_start.is_empty() && self.capture_end.is_empty())
+            || Self::time_window(
+                &self.capture_start,
+                &self.capture_end,
+                now.hour() * 60 + now.minute(),
+            )
+    }
     pub fn time_window(start: &str, end: &str, minute: u32) -> bool {
         let parse = |s: &str| -> Option<u32> {
             let (h, m) = s.split_once(':')?;
@@ -130,19 +139,18 @@ impl Settings {
         self.threshold_db = (self.threshold_db * 10.0).round() / 10.0;
         self.denoise_mode = self.denoise_mode.trim().to_ascii_lowercase();
         for (name, val) in [
-            ("war_mode_start", &self.war_mode_start),
-            ("war_mode_end", &self.war_mode_end),
-            ("capture_start", &self.capture_start),
-            ("capture_end", &self.capture_end),
+            ("war_mode_start", &mut self.war_mode_start),
+            ("war_mode_end", &mut self.war_mode_end),
+            ("capture_start", &mut self.capture_start),
+            ("capture_end", &mut self.capture_end),
         ] {
             if !val.is_empty() {
-                let parts: Vec<_> = val.split(':').collect();
-                if parts.len() != 2
-                    || parts[0].parse::<u32>().map(|h| h > 23).unwrap_or(true)
-                    || parts[1].parse::<u32>().map(|m| m > 59).unwrap_or(true)
-                {
-                    return Err(format!("{name} 格式应为 HH:MM"));
-                }
+                let (hour, minute) = val
+                    .split_once(':')
+                    .and_then(|(h, m)| Some((h.parse::<u32>().ok()?, m.parse::<u32>().ok()?)))
+                    .filter(|(h, m)| *h < 24 && *m < 60)
+                    .ok_or_else(|| format!("{name} 格式应为 HH:MM"))?;
+                *val = format!("{hour:02}:{minute:02}");
             }
         }
         if self.capture_start.is_empty() != self.capture_end.is_empty() {
@@ -385,7 +393,9 @@ fn recipients_from_users(users: &[User], device_id: &str, base: &[String]) -> Ve
         if user.disabled || user.email.trim().is_empty() {
             continue;
         }
-        if user.role.is_super() || user.device_ids.iter().any(|assigned| assigned == device_id) {
+        if user.role.is_update_admin()
+            || user.device_ids.iter().any(|assigned| assigned == device_id)
+        {
             recipients.push(user.email.trim().to_string());
         }
     }
@@ -535,9 +545,8 @@ impl CallRecord {
 #[allow(clippy::enum_variant_names)] // Public role names are part of persisted user records.
 pub enum UserRole {
     SuperAdmin,
-    /// Senior operator: can manage devices, users, settings, and evidence
-    /// review — everything except server-sensitive operations (API keys,
-    /// GitHub updates, retention policy).
+    /// Operational administrator: all devices and operational settings;
+    /// user management, secrets, retention and update installation stay super-only.
     UpdateAdmin,
     DeviceAdmin,
 }
@@ -785,6 +794,8 @@ pub struct HeartbeatRequest {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HeartbeatResponse {
+    pub manual_monitoring: bool,
+    pub war_active: bool,
     pub desired_monitoring: bool,
     pub threshold_db: f64,
     pub alert_cooldown_secs: u64,

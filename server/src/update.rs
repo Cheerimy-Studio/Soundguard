@@ -77,11 +77,7 @@ pub async fn check_github() -> Result<UpdateCheck, String> {
         .await
         .map_err(|e| format!("解析版本信息失败: {e}"))?;
 
-    let latest = release
-        .tag_name
-        .trim_start_matches('v')
-        .trim()
-        .to_string();
+    let latest = release.tag_name.trim_start_matches('v').trim().to_string();
     let current = CURRENT_VERSION.trim().to_string();
     let update_available = version_lt(&current, &latest);
 
@@ -110,11 +106,8 @@ pub async fn check_github() -> Result<UpdateCheck, String> {
 }
 
 fn version_lt(current: &str, latest: &str) -> bool {
-    let parse = |v: &str| -> Vec<u32> {
-        v.split('.')
-            .filter_map(|p| p.trim().parse().ok())
-            .collect()
-    };
+    let parse =
+        |v: &str| -> Vec<u32> { v.split('.').filter_map(|p| p.trim().parse().ok()).collect() };
     let c = parse(current);
     let l = parse(latest);
     for i in 0..c.len().max(l.len()) {
@@ -171,8 +164,7 @@ pub async fn apply_update(asset_url: &str) -> Result<(), String> {
         std::fs::write(&new_path, &bytes).map_err(|e| format!("写入新程序失败: {e}"))?;
         std::fs::set_permissions(&new_path, std::fs::Permissions::from_mode(0o755))
             .map_err(|e| format!("设置执行权限失败: {e}"))?;
-        std::fs::rename(&new_path, &current)
-            .map_err(|e| format!("替换程序失败: {e}"))?;
+        std::fs::rename(&new_path, &current).map_err(|e| format!("替换程序失败: {e}"))?;
     }
 
     // On Windows, rename current to .old, then rename new to current.
@@ -184,14 +176,12 @@ pub async fn apply_update(asset_url: &str) -> Result<(), String> {
         if old_path.exists() {
             let _ = std::fs::remove_file(&old_path);
         }
-        std::fs::rename(&current, &old_path)
-            .map_err(|e| format!("备份旧程序失败: {e}"))?;
-        std::fs::rename(&new_path, &current)
-            .map_err(|e| {
-                // Rollback: put the old binary back.
-                let _ = std::fs::rename(&old_path, &current);
-                format!("替换程序失败: {e}")
-            })?;
+        std::fs::rename(&current, &old_path).map_err(|e| format!("备份旧程序失败: {e}"))?;
+        std::fs::rename(&new_path, &current).map_err(|e| {
+            // Rollback: put the old binary back.
+            let _ = std::fs::rename(&old_path, &current);
+            format!("替换程序失败: {e}")
+        })?;
     }
 
     tracing::info!("Server binary updated to latest release");

@@ -8,6 +8,9 @@ mod playback;
 #[path = "../../client/common/rnnoise_engine.rs"]
 mod rnnoise_engine;
 mod rtc;
+#[path = "../../client/common/schedule.rs"]
+#[allow(dead_code)] // Legacy clients also use the shared anchored clock.
+mod schedule;
 mod totp;
 mod ui;
 use eframe::egui;
@@ -22,7 +25,8 @@ fn main() -> Result<(), eframe::Error> {
             })
             .with_min_inner_size([900.0, 640.0])
             .with_title("声垣")
-            .with_decorations(false),
+            .with_decorations(true)
+            .with_icon(app_icon()),
         ..Default::default()
     };
     eframe::run_native(
@@ -33,6 +37,16 @@ fn main() -> Result<(), eframe::Error> {
             Ok(Box::new(app::SoundGuardApp::new(cc)))
         }),
     )
+}
+fn app_icon() -> egui::IconData {
+    let image = image::load_from_memory(include_bytes!("../../client/src-tauri/icons/128x128.png"))
+        .expect("bundled application icon")
+        .into_rgba8();
+    egui::IconData {
+        width: image.width(),
+        height: image.height(),
+        rgba: image.into_raw(),
+    }
 }
 fn setup_style(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
@@ -45,7 +59,20 @@ fn setup_style(ctx: &egui::Context) {
         egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(213, 221, 231));
     style.visuals.extreme_bg_color = egui::Color32::WHITE;
     style.visuals.window_rounding = egui::Rounding::same(15.0);
+    // Labels are informational; only real text inputs should allow selection.
+    style.interaction.selectable_labels = false;
     style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+    style.spacing.button_padding = egui::vec2(12.0, 8.0);
+    style.spacing.interact_size.y = 32.0;
+    style
+        .text_styles
+        .insert(egui::TextStyle::Body, egui::FontId::proportional(14.0));
+    style
+        .text_styles
+        .insert(egui::TextStyle::Button, egui::FontId::proportional(14.0));
+    style
+        .text_styles
+        .insert(egui::TextStyle::Small, egui::FontId::proportional(12.0));
     ctx.set_style(style);
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(

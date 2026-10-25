@@ -54,6 +54,7 @@ pub struct SoundGuardApp {
     pub muted: bool,
     pub toast: Option<(String, Instant, bool)>,
     pub exiting: bool,
+    pub exit_started: Option<Instant>,
     pub preview: bool,
     pub screenshot: Option<String>,
     pub frames: u32,
@@ -82,11 +83,14 @@ impl SoundGuardApp {
         if phase == Phase::Running && !preview {
             net.start(config.clone(), audio.clone());
         }
-        let screenshot = args
-            .iter()
-            .position(|s| s == "--screenshot")
-            .and_then(|i| args.get(i + 1))
-            .cloned();
+        let screenshot = preview
+            .then(|| {
+                args.iter()
+                    .position(|s| s == "--screenshot")
+                    .and_then(|i| args.get(i + 1))
+                    .cloned()
+            })
+            .flatten();
         let mut app = Self {
             phase,
             config: config.clone(),
@@ -118,6 +122,7 @@ impl SoundGuardApp {
             muted: false,
             toast: None,
             exiting: false,
+            exit_started: None,
             preview,
             screenshot,
             frames: 0,
@@ -154,6 +159,7 @@ impl SoundGuardApp {
                 match screen.as_str() {
                     "settings" => app.settings_open = true,
                     "auth" => app.auth = Some(Action::Settings),
+                    "exit" => app.auth = Some(Action::Exit),
                     "consent" => app.phase = Phase::Consent,
                     "setup" => app.phase = Phase::Setup,
                     "war" => {
@@ -249,6 +255,32 @@ impl SoundGuardApp {
                 self.finish_auth(false, "验证超时，请稍后再试".into());
             }
         }
+        // A lost server reply must never trap the operator in the closing screen.
+        if self.exiting
+            && !self.status.exit_ready
+            && self
+                .exit_started
+                .is_some_and(|t| t.elapsed() >= Duration::from_secs(8))
+        {
+            self.status.exit_ready = true;
+        }
+    }
+    pub fn request_exit(&mut self) {
+        if self.exiting {
+            return;
+        }
+        // Only require confirmation when a credential that can actually be verified exists;
+        // an unconfigured or legacy client must never be trapped on the close screen.
+        let can_verify = !self.config.local_password_hash.is_empty()
+            || !self.status.policy.totp_secret.is_empty()
+            || self.status.policy.has_fixed_password;
+        if self.preview || !can_verify {
+            self.exiting = true;
+            self.exit_started = Some(Instant::now());
+            self.status.exit_ready = true;
+        } else {
+            self.request_auth(Action::Exit);
+        }
     }
     pub fn request_auth(&mut self, action: Action) {
         if self.auth.is_some() {
@@ -324,6 +356,7 @@ impl SoundGuardApp {
             }
             Some(Action::Exit) => {
                 self.exiting = true;
+                self.exit_started = Some(Instant::now());
                 if !self.net.send(Command::Quit) {
                     self.status.exit_ready = true;
                 }
@@ -378,6 +411,10 @@ impl SoundGuardApp {
         self.error.clear();
     }
     pub fn accept_consent(&mut self) {
+        if self.preview {
+            self.phase = Phase::Setup;
+            return;
+        }
         let mut next = self.config.clone();
         next.consent_accepted = true;
         if let Err(e) = next.save_to(&self.config_path) {
@@ -393,6 +430,14 @@ impl SoundGuardApp {
         };
     }
     pub fn do_setup(&mut self) {
+        if self.preview {
+            self.show_toast("预览模式：不会连接设备或保存配置", false);
+            return;
+        }
+        if !self.config.local_password_hash.is_empty() && self.guard.require_authorized().is_err() {
+            self.request_auth(Action::Settings);
+            return;
+        }
         if self.setup_password != self.setup_confirm {
             self.error = "两次输入的本地密码不一致".into();
             return;
@@ -499,5 +544,63 @@ mod tests {
         assert_eq!(app.auth_input, "in-progress");
         std::fs::remove_file(&app.config_path).unwrap();
         app.audio.stop();
+    }
+    #[test]
+    fn configured_close_is_protected_in_consent_setup_and_running() {
+        let mut app = app();
+        for phase in [Phase::Consent, Phase::Setup, Phase::Running] {
+            app.phase = phase;
+            app.auth = None;
+            app.exiting = false;
+            app.request_exit();
+            assert_eq!(app.auth, Some(Action::Exit));
+            assert!(!app.exiting);
+        }
+        app.auth = None;
+        app.request_exit();
+        app.finish_auth(false, String::new());
+        assert!(!app.exiting);
+        app.finish_auth(true, String::new());
+        assert!(app.exiting);
+        std::fs::remove_file(&app.config_path).unwrap();
+        app.audio.stop();
+    }
+    #[test]
+    fn client_without_verifiable_credential_can_always_close() {
+        let mut app = app();
+        app.config.local_password_hash.clear();
+        app.request_exit();
+        assert_eq!(app.auth, None);
+        assert!(app.exiting);
+        std::fs::remove_file(&app.config_path).unwrap();
+        app.audio.stop();
+    }
+    #[test]
+    fn preview_first_run_never_changes_real_configuration() {
+        let mut app = app();
+        let original = std::fs::read(&app.config_path).unwrap();
+        app.preview = true;
+        app.accept_consent();
+        app.setup_password = "Preview-pass-123".into();
+        app.setup_confirm = app.setup_password.clone();
+        app.do_setup();
+        assert_eq!(std::fs::read(&app.config_path).unwrap(), original);
+        std::fs::remove_file(&app.config_path).unwrap();
+        app.audio.stop();
+    }
+    #[test]
+    fn screenshot_flag_cannot_exit_real_configured_session() {
+        let app = app();
+        let path = app.config_path.clone();
+        app.audio.stop();
+        drop(app);
+        let mut real = SoundGuardApp::initialize(
+            path.clone(),
+            vec!["client".into(), "--screenshot".into(), "output.png".into()],
+        );
+        assert!(real.screenshot.is_none());
+        assert!(!real.exiting);
+        real.audio.stop();
+        std::fs::remove_file(path).unwrap();
     }
 }

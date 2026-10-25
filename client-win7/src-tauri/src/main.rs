@@ -8,6 +8,10 @@ mod rnnoise_engine;
 mod config_file;
 #[path = "../../../client/common/security.rs"]
 mod security;
+#[path = "../../../client/common/operation_auth.rs"]
+mod operation_auth;
+#[path = "../../../client/common/schedule.rs"]
+mod schedule;
 
 use std::{
     collections::VecDeque,
@@ -148,6 +152,9 @@ struct StatusSnapshot {
     notification_enabled: bool,
     notification_title: String,
     notification_content: String,
+    war_active: bool,
+    capture_start: String,
+    capture_end: String,
 }
 
 #[derive(Debug, Clone)]
@@ -159,12 +166,20 @@ struct RemoteConfig {
     auto_record_evidence: bool,
     ice_servers: Value,
     server_time: Option<String>,
+    manual_monitoring: Option<bool>,
+    capture_start: String,
+    capture_end: String,
+    capture_clock: Option<schedule::PolicyClock>,
 }
 
 impl Default for RemoteConfig {
     fn default() -> Self {
         Self {
             desired_monitoring: true,
+            manual_monitoring: None,
+            capture_start: String::new(),
+            capture_end: String::new(),
+            capture_clock: None,
             threshold_db: 65.0,
             alert_cooldown_secs: 300,
             evidence_seconds: 30,
@@ -296,6 +311,16 @@ struct HeartbeatResponse {
     denoise_mode: String,
     #[serde(default)]
     voice_enhance: bool,
+    #[serde(default)]
+    war_active: bool,
+    #[serde(default)]
+    capture_start: String,
+    #[serde(default)]
+    capture_end: String,
+    #[serde(default)]
+    manual_monitoring: Option<bool>,
+    #[serde(default)]
+    server_utc_offset_secs: i32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -458,20 +483,8 @@ fn set_call_active(state: State<'_, Arc<RuntimeState>>, active: bool) -> Result<
 }
 
 #[tauri::command]
-fn verify_pin(state: State<'_, Arc<RuntimeState>>, pin: String) -> Result<(), String> {
-    if pin.trim().is_empty() {
-        return Err("请输入本地密码".to_string());
-    }
-    let config = state.config();
-    if config.local_password_hash.trim().is_empty() {
-        return Err("尚未设置本地密码，请重新打开客户端完成首次配置".to_string());
-    }
-    state
-        .local_auth
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .verify(|| pin.len() <= 512 && verify_local_password(&config.local_password_hash, &pin))?;
-    Ok(())
+async fn verify_pin(state: State<'_, Arc<RuntimeState>>, pin: String) -> Result<(), String> {
+    operation_auth::authorize(&state, &pin).await
 }
 
 #[tauri::command]
@@ -481,19 +494,12 @@ async fn request_exit(
     pin: String,
 ) -> Result<(), String> {
     let config = state.config();
-    if config.needs_setup() {
+    if config.local_password_hash.is_empty() {
         state.exiting.store(true, Ordering::SeqCst);
         app.exit(0);
         return Ok(());
     }
-    if pin.trim().is_empty() {
-        return Err("请输入本地密码".to_string());
-    }
-    state
-        .local_auth
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .verify(|| pin.len() <= 512 && verify_local_password(&config.local_password_hash, &pin))?;
+    operation_auth::authorize(&state, &pin).await?;
     state.exiting.store(true, Ordering::SeqCst);
     // The server audit is best effort; the local password already authorized exit.
     let _ = post_json::<serde_json::Value, _>(
@@ -511,9 +517,13 @@ async fn request_exit(
 /// Immediate shutdown used when the user declines the first-run notice.
 /// No password is required: the app must not keep running without consent.
 #[tauri::command]
-fn exit_now(app: AppHandle, state: State<'_, Arc<RuntimeState>>) {
+fn exit_now(app: AppHandle, state: State<'_, Arc<RuntimeState>>) -> Result<(), String> {
+    if !state.config().local_password_hash.is_empty() {
+        return Err("已配置的客户端必须验证密码后关闭".into());
+    }
     state.exiting.store(true, Ordering::SeqCst);
     app.exit(0);
+    Ok(())
 }
 
 fn emit_status(app: &AppHandle, state: &RuntimeState) {
@@ -597,6 +607,13 @@ async fn network_loop(app: AppHandle, state: Arc<RuntimeState>) {
             continue;
         }
 
+        {
+            let remote=state.remote.read().unwrap_or_else(|p|p.into_inner());
+            if let Some(clock)=&remote.capture_clock {
+                apply_audio_state(&state, remote.manual_monitoring.unwrap_or(remote.desired_monitoring)
+                    && clock.active(&remote.capture_start,&remote.capture_end));
+            }
+        }
         if state.force_probe.swap(false, Ordering::SeqCst) || Instant::now() >= next_heartbeat {
             next_heartbeat = Instant::now() + Duration::from_secs(HEARTBEAT_SECS);
             let monitoring = state.audio.capturing();
@@ -634,6 +651,10 @@ async fn network_loop(app: AppHandle, state: Arc<RuntimeState>) {
                         remote.alert_cooldown_secs = response.alert_cooldown_secs;
                         remote.evidence_seconds = response.evidence_seconds;
                         remote.auto_record_evidence = response.auto_record_evidence;
+                        remote.manual_monitoring = response.manual_monitoring;
+                        remote.capture_start = response.capture_start.clone();
+                        remote.capture_end = response.capture_end.clone();
+                        remote.capture_clock = Some(schedule::PolicyClock::new(response.server_time, response.server_utc_offset_secs));
                         remote.ice_servers = response.ice_servers.clone();
                         remote.server_time = Some(
                             response
@@ -665,6 +686,9 @@ async fn network_loop(app: AppHandle, state: Arc<RuntimeState>) {
                         status.notification_enabled = response.notification_enabled;
                         status.notification_title = response.notification_title.clone();
                         status.notification_content = response.notification_content.clone();
+                        status.war_active = response.war_active;
+                        status.capture_start = response.capture_start.clone();
+                        status.capture_end = response.capture_end.clone();
                         let denoise_mode = match response.denoise_mode.as_str() {
                             "light" => audio::DENOISE_LIGHT,
                             "standard" => audio::DENOISE_STANDARD,
@@ -955,6 +979,9 @@ fn build_status(config: &ClientConfig, remote: &RemoteConfig) -> StatusSnapshot 
         notification_enabled: false,
         notification_title: String::new(),
         notification_content: String::new(),
+        war_active: false,
+        capture_start: String::new(),
+        capture_end: String::new(),
     }
 }
 

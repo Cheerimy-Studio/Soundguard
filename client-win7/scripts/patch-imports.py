@@ -28,6 +28,10 @@ def patch(path: pathlib.Path) -> int:
         for entry in pe.DIRECTORY_ENTRY_IMPORT:
             if entry.dll.lower() != b"combase.dll":
                 continue
+            allowed = {b"CoTaskMemAlloc", b"CoTaskMemFree", b"CoTaskMemRealloc"}
+            unsupported = [item.name or f"ordinal:{item.ordinal}" for item in entry.imports if item.name not in allowed]
+            if unsupported:
+                raise RuntimeError(f"Refusing to redirect unsupported combase imports: {unsupported}")
             # "combase.dll\0" -> "ole32.dll\0" (the remaining byte is padding)
             pe.set_bytes_at_rva(entry.struct.Name, b"ole32.dll\x00\x00")
             changed += 1

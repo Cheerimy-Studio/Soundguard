@@ -8,8 +8,8 @@ const outputs = [
     target: path.join(root, "dist", "soundguard-server.exe"),
   },
   {
-    source: path.join(root, "client", "src-tauri", "target", "release", "soundguard-client.exe"),
-    target: path.join(root, "dist", "soundguard-client.exe"),
+    source: path.join(root, "client-native", "target", "release", "soundguard-client-native.exe"),
+    target: path.join(root, "dist", "soundguard-client-native.exe"),
   },
 ];
 

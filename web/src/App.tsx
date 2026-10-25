@@ -782,7 +782,7 @@ export default function App() {
           {NAV_ITEMS.filter((item) =>
             currentUser?.role === "super_admin"
               || currentUser?.role === "update_admin"
-              || (item.key !== "users" && item.key !== "settings"),
+              || item.key !== "users",
           ).map((item) => {
             const Icon = item.icon;
             const active = page === item.key;
@@ -828,7 +828,7 @@ export default function App() {
           </div>
           <div className="topbar-right">
             {currentUser && (
-              <div className="account-chip" title={currentUser.role === "super_admin" ? "超级管理员" : "设备管理员"}>
+              <div className="account-chip" title={currentUser.role === "super_admin" ? "超级管理员" : currentUser.role === "update_admin" ? "运营管理员" : "设备管理员"}>
                 <UsersRound size={14} />
                 <span>{currentUser.username}</span>
               </div>
@@ -934,11 +934,12 @@ export default function App() {
               onNotify={notify}
             />
           )}
-          {page === "settings" && currentUser?.role === "super_admin" && (
+          {page === "settings" && currentUser && (
             <SettingsPage
               overview={overview}
               deviceId={overview.device.id}
               isSuper={currentUser?.role === "super_admin"}
+              canConfigure={currentUser?.role !== "device_admin"}
               onSave={handleSaveSettings}
               onNotify={notify}
             />
@@ -956,7 +957,7 @@ export default function App() {
           {NAV_ITEMS.filter((item) =>
             currentUser?.role === "super_admin"
               || currentUser?.role === "update_admin"
-              || (item.key !== "users" && item.key !== "settings"),
+              || item.key !== "users",
           ).map((item) => {
             const Icon = item.icon;
             return (

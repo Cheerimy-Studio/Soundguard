@@ -1106,89 +1106,6 @@
   }
 
 
-  // --- TOTP (RFC 6238) ---
-  const BASE32_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-
-  function base32Decode(encoded) {
-    const bytes = [];
-    let bits = 0, value = 0;
-    for (const ch of encoded.toUpperCase()) {
-      const idx = BASE32_CHARS.indexOf(ch);
-      if (idx === -1) continue;
-      value = (value << 5) | idx;
-      bits += 5;
-      if (bits >= 8) {
-        bytes.push((value >>> (bits - 8)) & 0xFF);
-        bits -= 8;
-      }
-    }
-    return new Uint8Array(bytes);
-  }
-
-  async function totpCode(secret) {
-    if (!secret) return "------";
-    const key = base32Decode(secret);
-    const counter = Math.floor(Date.now() / 30000);
-    const counterBuf = new ArrayBuffer(8);
-    new DataView(counterBuf).setUint32(4, counter);
-    const cryptoKey = await crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
-    const sig = new Uint8Array(await crypto.subtle.sign("HMAC", cryptoKey, counterBuf));
-    const offset = sig[sig.length - 1] & 0x0F;
-    const code = ((sig[offset] & 0x7F) << 24 | sig[offset+1] << 16 | sig[offset+2] << 8 | sig[offset+3]) % 1000000;
-    return String(code).padStart(6, "0");
-  }
-
-  // War mode + TOTP state
-  state.warMode = false;
-  state.totpSecret = "";
-
-  function updateWarMode() {
-    document.body.classList.toggle("war-mode", state.warMode);
-  }
-
-  function showTotpVerification(onSuccess) {
-    const modal = $("totp-modal");
-    if (!modal) { onSuccess(); return; }
-    modal.hidden = false;
-    $("totp-input").value = "";
-    $("totp-error").hidden = true;
-    const display = $("totp-display");
-    const refresh = async () => {
-      display.textContent = await totpCode(state.totpSecret);
-    };
-    refresh();
-    const interval = setInterval(refresh, 5000);
-    const cleanup = () => { clearInterval(interval); modal.hidden = true; };
-    $("totp-confirm").onclick = async () => {
-      const code = $("totp-input").value.trim();
-      if (!code) return;
-      // Verify locally first (offline capable)
-      const expected = await totpCode(state.totpSecret);
-      // Also check ±1 step
-      const key = base32Decode(state.totpSecret);
-      const now = Math.floor(Date.now() / 30000);
-      let valid = false;
-      for (const offset of [-1, 0, 1]) {
-        const cb = new ArrayBuffer(8);
-        new DataView(cb).setUint32(4, now + offset);
-        const ck = await crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
-        const sig = new Uint8Array(await crypto.subtle.sign("HMAC", ck, cb));
-        const o = sig[sig.length-1] & 0x0F;
-        const c = ((sig[o] & 0x7F) << 24 | sig[o+1] << 16 | sig[o+2] << 8 | sig[o+3]) % 1000000;
-        if (String(c).padStart(6, "0") === code) { valid = true; break; }
-      }
-      if (valid) {
-        cleanup();
-        onSuccess();
-      } else {
-        $("totp-error").textContent = "验证码错误";
-        $("totp-error").hidden = false;
-      }
-    };
-    $("totp-cancel").onclick = () => { cleanup(); };
-  }
-
-
   function endCall(sendHangup = true) {
     const call = state.call;
     if (!call) {
@@ -1282,6 +1199,7 @@
 
   function applyStatus(status) {
     state.status = status;
+    document.body.classList.toggle("war-mode", Boolean(status?.warActive));
     if (status) {
       if (status.serverUrl) {
         state.config = { ...(state.config || {}), serverUrl: status.serverUrl };
@@ -1308,11 +1226,11 @@
     state.authAction = action;
     if (action === "auto-answer-off") {
       els.settingsAuthTitle.textContent = "关闭自动接听";
-      els.settingsAuthCopy.textContent = "关闭自动接听需要本地密码，请输入首次配置时设置的密码。";
+      els.settingsAuthCopy.textContent = "请输入本地密码，或联网验证管理端固定密码、动态验证码。";
     } else {
-      els.settingsAuthTitle.textContent = "本地密码验证";
+      els.settingsAuthTitle.textContent = "管理员验证";
       els.settingsAuthCopy.textContent =
-        "设置中包含设备令牌和麦克风校准信息，请输入首次配置时设置的本地密码。";
+        "设置包含设备令牌与校准信息，请输入本地密码，或联网验证固定密码、动态验证码。";
     }
     els.settingsPin.value = "";
     els.settingsAuthError.hidden = true;
@@ -1334,7 +1252,7 @@
     const pin = els.settingsPin.value;
     if (!pin) {
       els.settingsAuthError.hidden = false;
-      els.settingsAuthError.textContent = "请输入本地密码";
+      els.settingsAuthError.textContent = "请输入本地密码、固定密码或动态验证码";
       return;
     }
     if (!isDesktop) {
@@ -1774,7 +1692,7 @@
       $("consent-exit").removeEventListener("click", exit);
       if (isDesktop) {
         // Declining the notice must terminate the whole app, not just the page.
-        void tauri.core.invoke("exit_now").catch(() => window.close());
+        void tauri.core.invoke("exit_now").catch(() => { modal.hidden = true; openCloseModal(); });
       }
     };
     $("consent-accept").addEventListener("click", accept);

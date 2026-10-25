@@ -43,6 +43,7 @@ sha1 = "0.10"
 hmac = "0.12"
 
 rodio = { version = "0.20", default-features = false }
+opus = "0.3"
 symphonia = { version = "0.5", features = ["all"] }
 
 # Misc
@@ -63,3 +64,6 @@ strip = true
 
 [dev-dependencies]
 webrtc-util = "0.8.1"
+
+[build-dependencies]
+winresource = "0.1"

@@ -1,3 +1,4 @@
+@font-face {font-family:"SoundGuard CJK";src:url("fonts/SoundGuardCJK.woff2") format("woff2");font-display:swap;font-style:normal;font-weight:400;}
 :root {
   color-scheme: light;
   --bg: #f4f6f8;
@@ -18,7 +19,7 @@
   --danger: #d64545;
   --danger-soft: #fff1f1;
   --shadow: 0 1px 2px rgba(20, 32, 51, 0.03), 0 10px 30px -24px rgba(20, 32, 51, 0.28);
-  --font: "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font: "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", "SoundGuard CJK", sans-serif;
 }
 
 * {
