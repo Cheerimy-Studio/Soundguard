@@ -39,7 +39,7 @@ Section "服务端" SecServer
   File "..\..\README.md"
   File "start-server.bat"
 
-  SetOutPath "$INSTDIR\web"
+  SetOutPath "$INSTDIR\web\dist"
   File /r "..\..\web\dist\*.*"
 
   SetOutPath "$INSTDIR"
