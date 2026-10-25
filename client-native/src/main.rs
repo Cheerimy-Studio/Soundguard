@@ -39,7 +39,7 @@ fn main() -> Result<(), eframe::Error> {
     )
 }
 fn app_icon() -> egui::IconData {
-    let image = image::load_from_memory(include_bytes!("../../client/src-tauri/icons/128x128.png"))
+    let image = image::load_from_memory(include_bytes!("../assets/128x128.png"))
         .expect("bundled application icon")
         .into_rgba8();
     egui::IconData {
@@ -75,6 +75,9 @@ fn setup_style(ctx: &egui::Context) {
         .insert(egui::TextStyle::Small, egui::FontId::proportional(12.0));
     ctx.set_style(style);
     let mut fonts = egui::FontDefinitions::default();
+    // The bundled CJK face is borrowed from the executable image, so it adds no
+    // heap copy. Microsoft YaHei is deliberately not loaded: reading its 19 MB
+    // TTC into memory would cost more than it improves typography.
     fonts.font_data.insert(
         "soundguard-cjk".into(),
         egui::FontData::from_static(include_bytes!("../assets/NotoSansCJKsc-Regular.otf")),
@@ -89,11 +92,9 @@ fn setup_style(ctx: &egui::Context) {
         .entry(egui::FontFamily::Monospace)
         .or_default()
         .push("soundguard-cjk".into());
-    // Same Windows font families as the legacy WebView; bundled CJK stays the portable fallback.
     #[cfg(windows)]
     for (name, file) in [
         ("legacy-ui", "segoeui.ttf"),
-        ("legacy-cjk", "msyh.ttc"),
         ("legacy-numbers", "seguisb.ttf"),
     ] {
         let root = std::env::var_os("WINDIR")
@@ -103,12 +104,12 @@ fn setup_style(ctx: &egui::Context) {
             fonts
                 .font_data
                 .insert(name.into(), egui::FontData::from_owned(data));
-            if name != "legacy-numbers" {
+            if name == "legacy-ui" {
                 fonts
                     .families
                     .entry(egui::FontFamily::Proportional)
                     .or_default()
-                    .insert(if name == "legacy-ui" { 0 } else { 1 }, name.into());
+                    .insert(0, name.into());
             }
         }
     }

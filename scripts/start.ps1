@@ -1,8 +1,8 @@
-# Starts the release server and Tauri client built with `npm run build`.
+# Starts the release server and native client built with `npm run build`.
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $server = Join-Path $root "dist\soundguard-server.exe"
-$client = Join-Path $root "dist\soundguard-client.exe"
+$client = Join-Path $root "dist\soundguard-client-native.exe"
 
 if (-not (Test-Path $server) -or -not (Test-Path $client)) {
     Write-Error "Release binaries are missing. Run 'npm run build' from the repository root first."

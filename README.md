@@ -1,17 +1,16 @@
-> 本轮界面、密码关闭保护、角色权限与跨端计划任务修复见 [FIX_ROUND2.md](FIX_ROUND2.md)。Win7 继续使用 `client-win7`。
-
 # 声垣 SoundGuard · 智能分贝监测与远程对讲系统
 
-本次修复的范围、验证结果与升级步骤见 [FIX_RELEASE.md](FIX_RELEASE.md)。
+> 采集端已统一为原生 egui 客户端，Windows WebView/Tauri 与 Win7 客户端不再构建或发布。
+> 本轮修复、验证与升级说明见最新 Fix 包内的 `READ_ME_FIRST.md`。
 
 一套 Rust 全栈环境声学监测系统：
 
-- **采集端**：Rust + Tauri 2 + 原生 WASAPI 音频采集，不依赖浏览器标签页常驻；30 秒能量均值、超限证据 WAV、设置/退出密码验证、异常离线检测、浅色原生界面。
-- **服务端**：Rust + Axum，JSON 文件持久化、用户名/密码登录、Argon2 哈希、超级管理员/设备管理员角色、设备级策略、SMTP 告警、日报、离线检测与 WebRTC 信令。Linux 发布包可直接部署到服务器。
-- **管理端**：React + TypeScript + ECharts，浅色响应式界面，多设备接入与切换、每秒实时波形、24 小时 / 7 天 / 30 天趋势、告警中心、证据回放、远程采集启停、WebRTC 双向对讲与单向广播。
-- **安卓端**：原生 WebView 外壳 + 前台监听服务，本地记忆登录、设备选择、每秒实时波形、超标通知、录音回放、双向对讲、公告与采集启停。
+- **采集端（Windows 10/11）**：Rust + eframe/egui 原生窗口，WASAPI 采集与回放，无需 WebView2；30 秒能量均值、超限报警音、证据 WAV、设置/退出 2FA 验证、断线重连与 WebRTC 对讲。
+- **服务端**：Rust + Axum，JSON 文件持久化、用户名/密码登录、Argon2 哈希、超级管理员/更新管理员/设备管理员角色、设备级策略、SMTP 告警、日报、离线检测与 WebRTC 信令。Linux 发布包可直接部署到服务器。
+- **管理端**：React + TypeScript + ECharts，浅色响应式界面，多设备接入与切换、实时波形、趋势、告警中心、证据回放、远程采集启停、WebRTC 双向对讲与单向广播、分贝战争排行榜。
+- **安卓端**：原生 WebView 外壳 + 前台监听服务，本地记忆登录、设备选择、实时波形、超标通知、录音回放、双向对讲、公告、采集计划与分贝战争排名。
 
-> Rust 客户端运行时实测约 30–50 MB 内存（含 WebView2 界面进程），显著低于 Electron。音频采集、30 秒聚合、证据缓冲、密码退出与网络心跳全部在 Rust 侧完成。界面为浅色桌面风格。
+> 原生采集端实测空闲约 58 MB 工作集，采集中约 90 MB（含 WebRTC、30 秒音频缓冲与网络连接）；空闲 CPU 约 2%。音频采集、30 秒聚合、证据缓冲、报警音、密码退出与网络心跳全部在 Rust 侧完成。
 
 ---
 
@@ -19,12 +18,12 @@
 
 ### 采集端（Windows）
 
-- 浅色界面，只显示后台设置的唯一设备名称；没有仪表盘式英文装饰标签。
+- 浅色卡片界面，只显示后台设置的唯一设备名称；状态、计划与阈值说明集中在主卡片。
 - 打开客户端设置、关闭自动接听、关闭客户端都需要输入首次配置时设置的本机密码。
 - 基于 Windows WASAPI 的原生麦克风采集，支持设备时钟与格式自动转换；Rust 实时计算 RMS / dBFS。
 - 使用 Windows 通信设备与回声消除参考端点；同时检测系统播放电平，电脑自身播放的声音不会计入环境分贝。驱动不支持硬件 AEC 时，会检测到系统播放并从分贝统计中忽略该时段，但录音证据仍保留完整 30 秒。
 - 通话期间自动暂停分贝检测与上报，结束后自动恢复。
-- 禁用 WebView2 右键菜单，避免误触浏览器菜单。
+- 普通标签文字不可选中，只有输入框允许复制，避免误选影响操作。
 - 每 30 秒计算一次 **Leq 能量平均**、峰值、最低值与采样帧数；测量前应用 80 Hz 高通；不对环境测量应用会压低持续噪声的自适应噪声门。
 - 内置 **RNNoise AI 降噪**（nnnoiseless 纯 Rust 移植）：常驻背景噪声（如持续 60 dB 嗡声）被神经网络持续抑制，突发的异常声音保持突出。提供关闭/轻度/标准/强化四档模式与人声增强（2–5 kHz 语音临场感提升），在管理端统一设置，采集端约 10 秒内自动生效。
 - 可校准的 dB SPL 偏移（默认 90 dB），超限时自动上传完整 **30 秒**单声道 48 kHz WAV，覆盖整个平均窗口。
@@ -40,7 +39,7 @@
 - 对讲启用回声消除与半双工防啸叫保护：远端说话时自动压低本端麦克风，避免同场部署时形成声反馈。
 - 管理端与安卓端通话录音使用 48 kHz 混音与 192 kbps Opus 编码，保存清晰的双方语音。
 - 通知板块显示后台发布的标题与内容；通话记录仅展示最近 5 条，支持回放。
-- 界面采用 Tauri 原生 WebView2，浅色轻量 UI，支持高 DPI。
+- 界面采用原生 egui 绘制，浅色卡片布局，支持高 DPI 与字体回退，不依赖 WebView2。
 
 ### 服务端
 
@@ -74,10 +73,10 @@
 ## 2. 架构
 
 ```text
-┌──────────────────────── Windows 采集端 (Tauri + Rust) ───────────────────────┐
+┌────────────────────── Windows 采集端 (egui + Rust 原生) ───────────────────────┐
 │  WASAPI 麦克风 ──► Rust 30s Leq / 峰值 / 环形音频缓冲 ──► HTTP 心跳 + 遥测       │
 │       │                         │                          │                 │
-│       └── WebView2 界面 ◄───────┴── 密码退出 / 设置 / 状态  │                 │
+│       └── 原生 egui 界面 ◄──────┴── 2FA 退出 / 设置 / 报警音  │                 │
 │                                      WebRTC 麦克风与扬声器 ◄─┼── 信令 WS      │
 └─────────────────────────────────────────────────────────────┼────────────────┘
                                                               ▼
@@ -95,7 +94,7 @@
 
 ### WebRTC 说明
 
-音视频媒体本身是浏览器/WebView2 之间的 **P2P WebRTC**，服务端只转发 SDP 与 ICE 信令，不转发媒体流。默认使用 Google STUN；跨公网或对称 NAT 环境请在 `.env` 的 `ICE_SERVERS` 中加入 TURN 服务器：
+音视频媒体本身是管理端浏览器与原生采集端之间的 **P2P WebRTC**，服务端只转发 SDP 与 ICE 信令，不转发媒体流。默认使用 Google STUN；跨公网或对称 NAT 环境请在 `.env` 的 `ICE_SERVERS` 中加入 TURN 服务器：
 
 ```env
 ICE_SERVERS=[{"urls":"stun:stun.l.google.com:19302"},{"urls":"turn:turn.example.com:3478","username":"user","credential":"secret"}]
@@ -117,16 +116,18 @@ ICE_SERVERS=[{"urls":"stun:stun.l.google.com:19302"},{"urls":"turn:turn.example.
 │  ├─ src/reports.rs        CSV / SVG 日报
 │  └─ src/auth.rs           JWT 与常量时间比较
 ├─ web/                     React 管理端 (Vite + ECharts)
-├─ client/
-│  ├─ src-tauri/            Tauri + Rust 客户端
-│  │  ├─ src/audio.rs       WASAPI 采集、30s Leq、证据 WAV
-│  │  └─ src/main.rs        网络循环、密码退出、Tauri 命令
-│  └─ ui/                   采集端原生 HTML/CSS/JS + WebRTC
+├─ client-native/           Windows 采集端（egui + Rust）
+│  ├─ src/ui.rs             浅色卡片界面、波形、设置抽屉
+│  ├─ src/audio.rs          WASAPI 采集、30s Leq、证据 WAV
+│  ├─ src/windows_audio.rs  WASAPI 采集与 AEC 参考
+│  ├─ src/rtc.rs            WebRTC 对讲与 PCMU 音频
+│  ├─ src/playback.rs       扬声器报警音与 WebM/Opus 回放
+│  └─ assets/               中文后备字体、应用图标
+├─ client/common/           采集端与服务端共享的音频/配置/安全模块
 ├─ scripts/
 │  ├─ seed-demo.mjs         生成 24h 演示数据并触发一次带证据的告警
 │  ├─ collect-release.mjs   收集发布版 exe 到 dist/
 │  ├─ start.ps1             从 dist/ 启动服务端与客户端
-│  └─ cdp-client.mjs        开发期 WebView2 CDP 调试脚本（可选）
 ├─ mobile/android/           安卓 App（WebView + 前台监听服务）
 ├─ dist/                    预构建发布版 exe 与安卓 APK
 ├─ data/                    运行时数据（gitignore）
@@ -140,10 +141,9 @@ ICE_SERVERS=[{"urls":"stun:stun.l.google.com:19302"},{"urls":"turn:turn.example.
 
 ### 环境要求
 
-- Windows 10/11（采集端；Windows 7 SP1 使用单独的兼容版，见 4.5.1）
+- Windows 10/11 x64（原生采集端；Windows 7 不再支持）
 - Node.js 20+（本项目验证于 Node 24）
 - Rust stable（本项目验证于 1.94）与 MSVC Build Tools
-- WebView2 Runtime（Windows 10/11 通常已预装）
 - 可选：Python 3 + Pillow（重新生成图标）；本仓库已包含生成好的图标
 
 ### 4.1 配置
@@ -219,7 +219,7 @@ npm run build
 
 ```text
 dist\soundguard-server.exe
-dist\soundguard-client.exe
+dist\soundguard-client-native.exe
 ```
 
 也可以直接运行：
@@ -228,45 +228,7 @@ dist\soundguard-client.exe
 powershell -ExecutionPolicy Bypass -File scripts\start.ps1
 ```
 
-启动脚本要求先存在 `.env`，并会从仓库根目录启动服务端，确保能读取 `web/dist`。发布版客户端仍需 WebView2 Runtime。
-
-### 4.5.1 Windows 7 SP1 兼容版
-
-Windows 7 不能运行当前的 Rust 1.94 / Tauri 2.12 客户端（会缺少 `bcryptprimitives.dll!ProcessPrng`）。仓库提供独立兼容版源码 `client-win7/`，使用 Rust 1.77.2、Tauri 2.2.5 和静态 CRT 构建，界面与功能代码和主客户端一致。
-
-发布目录：
-
-```text
-dist\soundguard-win7-setup-0.1.0.exe
-dist\win7\soundguard-client-win7.exe
-dist\win7\MicrosoftEdgeWebView2RuntimeInstallerX64_109.0.1518.78.exe
-```
-
-推荐直接运行 `soundguard-win7-setup-0.1.0.exe`：安装包已内置 WebView2 109 固定运行时，按当前用户安装到 `%LOCALAPPDATA%\声垣`，开始菜单和桌面会自动创建快捷方式，卸载可在“程序和功能”中完成。
-
-便携版步骤：
-
-1. 系统必须是 **Windows 7 SP1 64 位**，并已安装 SHA-2 代码签名更新（KB4474419、KB4490628）。
-2. 先运行 `MicrosoftEdgeWebView2RuntimeInstallerX64_109.0.1518.78.exe`。109.0.1518.78 是最后支持 Windows 7 的 WebView2 版本，安装后可被兼容版客户端直接使用。
-3. 把 `soundguard-client-win7.exe` 放到有写入权限的目录（例如 `D:\SoundGuard\`），双击启动并按引导页配置服务器、设备编号、设备令牌和本机密码。配置写入同目录的 `client-config.json`，不要放到 `Program Files`。
-4. 首次启动后确认麦克风、系统播放检测、对讲防啸叫和证据录音正常，再进行正式部署。
-
-兼容版构建（编译后会自动把 `combase.dll` 的旧导入重定向到 Windows 7 自带的 `ole32.dll`）：
-
-```powershell
-rustup toolchain install 1.77.2-x86_64-pc-windows-msvc
-python -m pip install pefile
-cd client-win7
-.\build.ps1
-```
-
-如需重新生成带 WebView2 109 固定运行时的安装包，把固定运行时解压到 `src-tauri\webview2-runtime\Microsoft.WebView2.FixedVersionRuntime.109.0.1518.78.x64\`，然后运行：
-
-```powershell
-..\client\node_modules\.bin\tauri.cmd bundle --bundles nsis
-```
-
-兼容版不包含 WebView2 109 之外的系统组件，也不改变服务端或数据库格式。Windows 7 已停止安全更新，建议仅在隔离局域网使用；公网部署请使用 Windows 10/11 客户端。
+启动脚本要求先存在 `.env`，并会从仓库根目录启动服务端，确保能读取 `web/dist`。原生采集端不需要 WebView2。
 
 ### 4.6 安卓 App
 
@@ -481,7 +443,7 @@ npm run test:server
 npm run build:web
 
 # 客户端编译检查
-cargo check --manifest-path client/src-tauri/Cargo.toml
+cargo check --manifest-path client-native/Cargo.toml
 ```
 
 已验证的核心链路：

@@ -21,23 +21,7 @@ jobs:
       - run: bash scripts/test-client-core.sh
       - run: cargo build --locked --manifest-path server/Cargo.toml
       - run: node scripts/test-integration.mjs
-      - run: node --check client/ui/app.js && node --check mobile/android/app/src/main/assets/app.js
-  windows-collector:
-    runs-on: windows-latest
-    env:
-      TAURI_CONFIG: '{"bundle":{"windows":{"webviewInstallMode":{"type":"skip"}}}}'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - manifest: client/src-tauri/Cargo.toml
-            toolchain: stable
-          - manifest: client-win7/src-tauri/Cargo.toml
-            toolchain: '1.77.2'
-    steps:
-      - uses: actions/checkout@v4
-      - run: rustup toolchain install ${{ matrix.toolchain }} --profile minimal
-      - run: cargo +${{ matrix.toolchain }} check --locked --manifest-path ${{ matrix.manifest }}
+      - run: node --check mobile/android/app/src/main/assets/app.js
   android:
     runs-on: ubuntu-latest
     steps:
@@ -56,6 +40,8 @@ jobs:
       - run: rustup update stable --no-self-update
       - run: python -m pip install "cmake>=3.20,<4"
       - run: cargo check --locked --manifest-path client-native/Cargo.toml
+        env:
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
       - run: cargo test --locked --manifest-path client-native/Cargo.toml
       - run: cargo build --release --locked --manifest-path client-native/Cargo.toml
       - uses: actions/upload-artifact@v4

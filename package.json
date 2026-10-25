@@ -2,9 +2,9 @@
   "name": "soundguard",
   "version": "0.2.0",
   "private": true,
-  "description": "SoundGuard · Rust/Tauri decibel monitoring and remote intercom system",
+  "description": "SoundGuard · Rust/egui decibel monitoring and remote intercom system",
   "scripts": {
-    "setup": "npm install --prefix web && npm install --prefix client",
+    "setup": "npm install --prefix web",
     "build:web": "npm run build --prefix web",
     "build:server": "cargo build --release --manifest-path server/Cargo.toml",
     "build:client": "cargo build --release --locked --manifest-path client-native/Cargo.toml",
@@ -19,7 +19,6 @@
     "build:android": "cd mobile/android && gradlew.bat assembleRelease",
     "test:integration": "node scripts/test-integration.mjs",
     "test:audio": "bash scripts/test-client-core.sh",
-    "build:client:legacy": "npm run build --prefix client",
-    "build:client:win7": "powershell -ExecutionPolicy Bypass -File client-win7/build.ps1"
+    "build:installers": "powershell -ExecutionPolicy Bypass -File scripts/build-installers.ps1"
   }
 }

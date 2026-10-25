@@ -237,8 +237,23 @@ export function OverviewPage({
   return (
     <div className="dashboard-page">
       <section className={`policy-status-strip ${policy.war ? "is-war" : ""}`} aria-live="polite">
-        <span><strong>{policy.war ? "分贝战争进行中" : "日常监测"}</strong>{policy.war ? " · 本时段不触发噪声告警" : " · 按设备阈值告警"}</span>
-        <span>{settings.captureStart ? `计划 ${settings.captureStart} — ${settings.captureEnd} · ${!device.desiredMonitoring ? "手动暂停" : policy.capture ? "时段内" : "等待计划时段"}` : "采集由管理员手动控制"}</span>
+        <span title="日常监测按 30 秒平均值与设备阈值比较；15 秒滑动平均值超过阈值时先显示预警。">
+          <strong>{policy.war ? "分贝战争进行中" : "日常监测"}</strong>
+          {policy.war
+            ? " · 本时段不触发噪声告警，按平均声压排名"
+            : ` · 30 秒平均超过 ${settings.thresholdDb ?? 65} dB 触发告警`}
+        </span>
+        <span title="未设置采集计划时，由管理员在设备页手动开始或暂停采集；设置计划后按服务器时区的时段执行，手动暂停优先。">
+          {settings.captureStart
+            ? `采集计划 ${settings.captureStart} — ${settings.captureEnd} · ${
+                !device.desiredMonitoring
+                  ? "已手动暂停（优先于计划）"
+                  : policy.capture
+                    ? "当前在计划时段内"
+                    : "等待计划时段"
+              }`
+            : "未设置定时计划 · 由管理员在设备页手动开始或暂停采集"}
+        </span>
       </section>
       {policy.war && <section className="panel war-rank-panel"><h3>分贝战争 · 当前排名</h3><p>仅显示权限内在线且正在采集的设备</p>
         {ranks.length ? <ol>{ranks.map(row=><li key={row.id}><span>{row.name}</span><strong>{row.avgDb?.toFixed(1) ?? "--"} dB</strong></li>)}</ol> : <p>等待有效采集数据</p>}

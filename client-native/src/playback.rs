@@ -255,6 +255,14 @@ mod tests {
         malformed[..4].copy_from_slice(&[0x1a, 0x45, 0xdf, 0xa3]);
         assert!(decode_file(malformed, |_, _, _| Ok(())).is_err());
     }
+    #[test]
+    fn alarm_signal_is_finite_and_audible() {
+        let samples = alarm_samples();
+        assert_eq!(samples.len(), 48_000);
+        assert!(samples.iter().all(|v| v.is_finite()));
+        assert!(samples.iter().any(|v| v.abs() > 0.25));
+        assert!(samples.iter().any(|v| v.abs() < 0.001));
+    }
 }
 
 fn next_packet(

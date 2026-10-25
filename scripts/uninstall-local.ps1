@@ -14,12 +14,13 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 
-Get-Process soundguard-server, soundguard-client -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process soundguard-server, soundguard-client-native -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 500
 
 $configs = @(
     (Join-Path $root "dist\client-config.json"),
-    (Join-Path $root "client\src-tauri\target\debug\client-config.json"),
+    (Join-Path $root "client-native\target\debug\client-config.json"),
+    (Join-Path $env:LOCALAPPDATA "Programs\SoundGuard\client-config.json"),
     (Join-Path $env:APPDATA "com.soundguard.client\client-config.json")
 )
 if ($RemoveDesktopCopy) {

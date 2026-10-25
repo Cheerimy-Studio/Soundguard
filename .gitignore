@@ -1,12 +1,7 @@
 # dependencies / build output
 node_modules/
 server/target/
-client/src-tauri/target/
-client-win7/target/
 client-native/target/
-client-win7/src-tauri/gen/
-client-win7/src-tauri/webview2-runtime/
-client/src-tauri/gen/
 web/dist/
 
 # runtime data and secrets

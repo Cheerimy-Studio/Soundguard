@@ -59,6 +59,10 @@ pub struct SoundGuardApp {
     pub screenshot: Option<String>,
     pub frames: u32,
     pub last_alarm: Option<Instant>,
+    pub alarm_output: Option<crate::playback::AudioOutput>,
+    pub alarm_init: Option<std::sync::mpsc::Receiver<Result<crate::playback::AudioOutput, String>>>,
+    pub alarm_error: Option<String>,
+    pub alarm_volume_sent: f32,
 }
 impl SoundGuardApp {
     pub fn new(_: &eframe::CreationContext<'_>) -> Self {
@@ -127,7 +131,14 @@ impl SoundGuardApp {
             screenshot,
             frames: 0,
             last_alarm: None,
+            alarm_output: None,
+            alarm_init: None,
+            alarm_error: None,
+            alarm_volume_sent: 0.0,
         };
+        if !app.preview {
+            app.spawn_alarm_init();
+        }
         if preview {
             app.phase = Phase::Running;
             app.status.connected = true;
@@ -176,8 +187,69 @@ impl SoundGuardApp {
     pub fn show_toast(&mut self, msg: impl Into<String>, err: bool) {
         self.toast = Some((msg.into(), Instant::now(), err));
     }
+    /// Speaker streams cost a WASAPI handshake, so the alarm keeps one output
+    /// alive for the whole session and initializes it off the UI thread.
+    fn spawn_alarm_init(&mut self) {
+        if self.alarm_output.is_some() || self.alarm_init.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::playback::AudioOutput::new());
+        });
+        self.alarm_init = Some(rx);
+    }
+    fn poll_alarm_output(&mut self) {
+        if let Some(rx) = &self.alarm_init {
+            match rx.try_recv() {
+                Ok(Ok(out)) => {
+                    out.volume(self.config.alert_volume);
+                    self.alarm_volume_sent = self.config.alert_volume;
+                    self.alarm_output = Some(out);
+                    self.alarm_error = None;
+                    self.alarm_init = None;
+                }
+                Ok(Err(error)) => {
+                    self.alarm_error = Some(error);
+                    self.alarm_init = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.alarm_error = Some("扬声器初始化失败".into());
+                    self.alarm_init = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(out) = &self.alarm_output {
+            if (self.alarm_volume_sent - self.config.alert_volume).abs() > 0.005 {
+                out.volume(self.config.alert_volume);
+                self.alarm_volume_sent = self.config.alert_volume;
+            }
+        }
+    }
+    pub fn test_alarm(&mut self) {
+        if self.preview {
+            self.show_toast("预览模式不播放报警音", false);
+            return;
+        }
+        if self.alarm_output.is_none() && self.alarm_init.is_none() {
+            self.alarm_error = None;
+            self.spawn_alarm_init();
+        }
+        if let Some(out) = &self.alarm_output {
+            out.stop();
+            out.pcm(1, 48000, crate::playback::alarm_samples());
+            self.show_toast("正在播放报警提示音", false);
+        } else if let Some(error) = &self.alarm_error {
+            let message = format!("报警音不可用：{error}");
+            self.show_toast(message, true);
+        } else {
+            self.show_toast("报警音正在初始化，请稍后再试", false);
+        }
+    }
     pub fn tick(&mut self) {
         if !self.preview {
+            self.poll_alarm_output();
             let s = self.audio.shared.snapshot();
             self.current_db = s.current_db;
             self.average_db = s.average_db;
@@ -209,14 +281,20 @@ impl SoundGuardApp {
                 })
             {
                 self.last_alarm = Some(Instant::now());
-                let volume = self.config.alert_volume;
-                std::thread::spawn(move || {
-                    if let Ok(out) = crate::playback::AudioOutput::new() {
-                        out.volume(volume);
-                        out.pcm(1, 48000, crate::playback::alarm_samples());
-                        std::thread::sleep(Duration::from_millis(1100));
+                let played = if let Some(out) = &self.alarm_output {
+                    out.stop();
+                    out.pcm(1, 48000, crate::playback::alarm_samples());
+                    true
+                } else {
+                    if self.alarm_init.is_none() && self.alarm_error.is_none() {
+                        self.spawn_alarm_init();
                     }
-                });
+                    false
+                };
+                if played {
+                    let volume = (self.config.alert_volume * 100.0).round() as i32;
+                    self.show_toast(format!("环境声音超标，已播放报警音（{volume}%）"), true);
+                }
             }
             self.totp.set_secret(self.status.policy.totp_secret.clone());
             if let Some(server) = self.status.policy.server_time {

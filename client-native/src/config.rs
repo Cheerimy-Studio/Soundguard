@@ -25,7 +25,7 @@ impl Default for ClientConfig {
             local_password_hash: String::new(),
             consent_accepted: false,
             auto_answer: true,
-            alert_volume: 0.22,
+            alert_volume: 0.65,
         }
     }
 }

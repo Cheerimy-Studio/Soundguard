@@ -14,8 +14,8 @@ InstallDir "$PROGRAMFILES64\SoundGuard Server"
 InstallDirRegKey HKLM "Software\SoundGuard\Server" "InstallDir"
 RequestExecutionLevel admin
 SetCompressor /SOLID lzma
-Icon "..\..\client\src-tauri\icons\icon.ico"
-UninstallIcon "..\..\client\src-tauri\icons\icon.ico"
+Icon "..\..\client-native\assets\icon.ico"
+UninstallIcon "..\..\client-native\assets\icon.ico"
 BrandingText "${APPNAME} ${VERSION} · ${COMPANY}"
 
 !define MUI_ABORTWARNING
