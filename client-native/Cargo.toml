@@ -1,0 +1,55 @@
+[package]
+name = "soundguard-client-native"
+version = "0.2.0"
+edition = "2021"
+description = "SoundGuard native edge collector (no WebView)"
+license = "MIT"
+
+[dependencies]
+# GUI framework
+egui = "0.28"
+eframe = { version = "0.28", default-features = false, features = ["default_fonts", "glow"] }
+egui_plot = "0.28"
+
+# Async runtime + networking
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+
+# Audio capture (reuses WASAPI via wasapi crate in audio.rs)
+wasapi = "0.26"
+
+# Audio output for intercom playback
+
+# AI denoise (RNNoise)
+nnnoiseless = { version = "0.5.2", default-features = false }
+
+# WebRTC for intercom
+webrtc = "0.10"
+bytes = "1"
+
+# Security
+argon2 = "0.5"
+password-hash = { version = "0.5", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+sha1 = "0.10"
+hmac = "0.12"
+
+# Misc
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
