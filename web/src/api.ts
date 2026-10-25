@@ -175,6 +175,8 @@ export const api = {
       alertCooldownSecs: number | null;
       offlineTimeoutSecs: number | null;
       autoRecordEvidence: boolean | null;
+      captureStart: string | null;
+      captureEnd: string | null;
     },
   ): Promise<Device> {
     return request<Device>(`/devices/${encodeURIComponent(id)}/settings`, {

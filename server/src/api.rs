@@ -996,9 +996,14 @@ async fn update_device_settings(
     Path(id): Path<String>,
     Json(request): Json<DeviceSettingsUpdate>,
 ) -> Result<Json<DeviceView>, AppError> {
-    // Device policy (threshold / cooldown / offline / evidence) may be tuned by
-    // the device admin assigned to this node; global defaults stay super-only.
+    // Threshold / cooldown / offline / evidence may be tuned by the device admin
+    // assigned to this node. Capture schedules are limited to operational admins.
     admin.ensure_device_access(&id)?;
+    if !admin.is_update_admin()
+        && (request.capture_start.is_some() || request.capture_end.is_some())
+    {
+        return Err(AppError::forbidden("计划任务仅限超级管理员或管理员设置"));
+    }
     let mut settings = request.into_settings();
     settings
         .validate_and_normalize()
@@ -1523,6 +1528,12 @@ async fn update_settings(
             || !settings.fixed_password_hash.is_empty())
     {
         return Err(AppError::forbidden("数据留存与固定密码仅限超级管理员修改"));
+    }
+    if !admin.is_super()
+        && (settings.capture_start != previous.capture_start
+            || settings.capture_end != previous.capture_end)
+    {
+        return Err(AppError::forbidden("全局计划任务仅限超级管理员修改"));
     }
     if settings.fixed_password_hash.is_empty() {
         settings.fixed_password_hash = previous.fixed_password_hash.clone();

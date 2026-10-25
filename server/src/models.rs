@@ -62,6 +62,26 @@ fn default_war_mode_end() -> String {
     "08:00".to_string()
 }
 
+fn parse_hhmm(value: &str) -> Option<u32> {
+    let (hour, minute) = value.split_once(':')?;
+    let hour: u32 = hour.parse().ok()?;
+    let minute: u32 = minute.parse().ok()?;
+    (hour < 24 && minute < 60).then_some(hour * 60 + minute)
+}
+
+pub fn normalize_hhmm(name: &str, value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(String::new());
+    }
+    let (hour, minute) = value
+        .split_once(':')
+        .and_then(|(h, m)| Some((h.parse::<u32>().ok()?, m.parse::<u32>().ok()?)))
+        .filter(|(h, m)| *h < 24 && *m < 60)
+        .ok_or_else(|| format!("{name} 格式应为 HH:MM"))?;
+    Ok(format!("{hour:02}:{minute:02}"))
+}
+
 impl Settings {
     pub fn war_active(&self, now: chrono::DateTime<chrono::Local>) -> bool {
         use chrono::Timelike;
@@ -74,25 +94,22 @@ impl Settings {
     }
     pub fn capture_active(&self, now: chrono::DateTime<chrono::Local>) -> bool {
         use chrono::Timelike;
-        (self.capture_start.is_empty() && self.capture_end.is_empty())
-            || Self::time_window(
-                &self.capture_start,
-                &self.capture_end,
-                now.hour() * 60 + now.minute(),
-            )
+        Self::time_window(
+            &self.capture_start,
+            &self.capture_end,
+            now.hour() * 60 + now.minute(),
+        )
     }
+    /// Empty start means "from midnight"; empty end means "until midnight".
+    /// This allows an auto-start-only or auto-stop-only daily schedule.
     pub fn time_window(start: &str, end: &str, minute: u32) -> bool {
-        let parse = |s: &str| -> Option<u32> {
-            let (h, m) = s.split_once(':')?;
-            let h: u32 = h.parse().ok()?;
-            let m: u32 = m.parse().ok()?;
-            (h < 24 && m < 60).then_some(h * 60 + m)
-        };
-        match (parse(start), parse(end)) {
+        match (parse_hhmm(start), parse_hhmm(end)) {
+            (None, None) => true,
+            (Some(a), None) => minute >= a,
+            (None, Some(b)) => minute < b,
             (Some(a), Some(b)) if a < b => minute >= a && minute < b,
             (Some(a), Some(b)) if a > b => minute >= a || minute < b,
             (Some(_), Some(_)) => true,
-            _ => false,
         }
     }
     pub fn validate_and_normalize(&mut self) -> Result<(), String> {
@@ -144,17 +161,7 @@ impl Settings {
             ("capture_start", &mut self.capture_start),
             ("capture_end", &mut self.capture_end),
         ] {
-            if !val.is_empty() {
-                let (hour, minute) = val
-                    .split_once(':')
-                    .and_then(|(h, m)| Some((h.parse::<u32>().ok()?, m.parse::<u32>().ok()?)))
-                    .filter(|(h, m)| *h < 24 && *m < 60)
-                    .ok_or_else(|| format!("{name} 格式应为 HH:MM"))?;
-                *val = format!("{hour:02}:{minute:02}");
-            }
-        }
-        if self.capture_start.is_empty() != self.capture_end.is_empty() {
-            return Err("定时采集开始与结束时间必须同时填写".into());
+            *val = normalize_hhmm(name, val)?;
         }
         if self.war_mode_enabled && (self.war_mode_start.is_empty() || self.war_mode_end.is_empty())
         {
@@ -194,6 +201,10 @@ pub struct DeviceSettings {
     pub offline_timeout_secs: Option<u64>,
     #[serde(default)]
     pub auto_record_evidence: Option<bool>,
+    #[serde(default)]
+    pub capture_start: Option<String>,
+    #[serde(default)]
+    pub capture_end: Option<String>,
 }
 
 impl DeviceSettings {
@@ -214,6 +225,14 @@ impl DeviceSettings {
                 return Err("设备离线判定时间必须在 20–3600 秒之间".to_string());
             }
         }
+        for (name, value) in [
+            ("captureStart", &mut self.capture_start),
+            ("captureEnd", &mut self.capture_end),
+        ] {
+            if let Some(raw) = value {
+                *raw = normalize_hhmm(name, raw)?;
+            }
+        }
         Ok(())
     }
 
@@ -230,6 +249,12 @@ impl DeviceSettings {
         }
         if let Some(value) = self.auto_record_evidence {
             result.auto_record_evidence = value;
+        }
+        if let Some(value) = &self.capture_start {
+            result.capture_start = value.clone();
+        }
+        if let Some(value) = &self.capture_end {
+            result.capture_end = value.clone();
         }
         // Evidence must cover the complete 30-second averaging window.
         result.evidence_seconds = 30;
@@ -672,6 +697,10 @@ pub struct DeviceSettingsUpdate {
     pub offline_timeout_secs: Option<u64>,
     #[serde(default)]
     pub auto_record_evidence: Option<bool>,
+    #[serde(default)]
+    pub capture_start: Option<String>,
+    #[serde(default)]
+    pub capture_end: Option<String>,
 }
 
 impl DeviceSettingsUpdate {
@@ -681,6 +710,8 @@ impl DeviceSettingsUpdate {
             alert_cooldown_secs: self.alert_cooldown_secs,
             offline_timeout_secs: self.offline_timeout_secs,
             auto_record_evidence: self.auto_record_evidence,
+            capture_start: self.capture_start,
+            capture_end: self.capture_end,
         }
     }
 }
@@ -1023,6 +1054,16 @@ mod tests {
             created_at: Utc::now(),
             last_login_at: None,
         }
+    }
+
+    #[test]
+    fn capture_window_allows_one_sided_daily_schedules() {
+        assert!(Settings::time_window("", "", 100));
+        assert!(!Settings::time_window("08:00", "", 470));
+        assert!(Settings::time_window("08:00", "", 480));
+        assert!(Settings::time_window("", "18:00", 600));
+        assert!(!Settings::time_window("", "18:00", 1080));
+        assert!(Settings::time_window("22:00", "06:00", 23 * 60));
     }
 
     #[test]

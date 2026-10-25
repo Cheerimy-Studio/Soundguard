@@ -44,6 +44,7 @@ type PolicyFollow = {
   alertCooldownSecs: boolean;
   offlineTimeoutSecs: boolean;
   autoRecordEvidence: boolean;
+  capture: boolean;
 };
 
 type PolicyValues = {
@@ -51,24 +52,31 @@ type PolicyValues = {
   alertCooldownSecs: number;
   offlineTimeoutSecs: number;
   autoRecordEvidence: boolean;
+  captureStart: string;
+  captureEnd: string;
 };
 
 function policyFromDevice(
   base: Settings,
   deviceSettings: DeviceSettings | undefined,
 ): { follow: PolicyFollow; values: PolicyValues } {
+  const scheduleOverride =
+    deviceSettings?.captureStart != null || deviceSettings?.captureEnd != null;
   return {
     follow: {
       thresholdDb: deviceSettings?.thresholdDb == null,
       alertCooldownSecs: deviceSettings?.alertCooldownSecs == null,
       offlineTimeoutSecs: deviceSettings?.offlineTimeoutSecs == null,
       autoRecordEvidence: deviceSettings?.autoRecordEvidence == null,
+      capture: !scheduleOverride,
     },
     values: {
       thresholdDb: deviceSettings?.thresholdDb ?? base.thresholdDb,
       alertCooldownSecs: deviceSettings?.alertCooldownSecs ?? base.alertCooldownSecs,
       offlineTimeoutSecs: deviceSettings?.offlineTimeoutSecs ?? base.offlineTimeoutSecs,
       autoRecordEvidence: deviceSettings?.autoRecordEvidence ?? base.autoRecordEvidence,
+      captureStart: deviceSettings?.captureStart ?? base.captureStart,
+      captureEnd: deviceSettings?.captureEnd ?? base.captureEnd,
     },
   };
 }
@@ -238,6 +246,8 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
         alertCooldownSecs: policy.follow.alertCooldownSecs ? null : policy.values.alertCooldownSecs,
         offlineTimeoutSecs: policy.follow.offlineTimeoutSecs ? null : policy.values.offlineTimeoutSecs,
         autoRecordEvidence: policy.follow.autoRecordEvidence ? null : policy.values.autoRecordEvidence,
+        captureStart: policy.follow.capture ? null : policy.values.captureStart,
+        captureEnd: policy.follow.capture ? null : policy.values.captureEnd,
       });
       if (policyBound.current === updated.id) {
         policyEditing.current=false;
@@ -378,7 +388,8 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
 
       <nav className="settings-section-nav" aria-label="设置分区">
         <a href="#device-policy">设备策略</a>
-        {canConfigure && <><a href="#war-policy">分贝战争</a><a href="#schedule-policy">计划任务</a></>}
+        {canConfigure && <a href="#war-policy">分贝战争</a>}
+        {isSuper && <a href="#schedule-policy">计划任务</a>}
         {isSuper && <a href="#password-policy">操作保护</a>}
         <span>{canConfigure ? "全局策略对所有客户端生效" : "仅可修改已分配设备的独立策略"}</span>
       </nav>
@@ -449,6 +460,44 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
                   />
                   <span>阈值跟随全局默认</span>
                 </label>
+                {canConfigure && (
+                  <div className="device-schedule-block">
+                    <div className="row-between">
+                      <h4>计划任务</h4>
+                      <label className="check-row">
+                        <input
+                          type="checkbox"
+                          checked={policy.follow.capture}
+                          onChange={(event) => toggleFollow("capture", event.target.checked)}
+                        />
+                        <span>跟随全局默认</span>
+                      </label>
+                    </div>
+                    <div className="field-grid">
+                      <label className="form-field">
+                        <span>自动开启</span>
+                        <input
+                          type="time"
+                          value={policy.values.captureStart}
+                          disabled={policy.follow.capture}
+                          onChange={(event) => updatePolicy("captureStart", event.target.value)}
+                        />
+                      </label>
+                      <label className="form-field">
+                        <span>自动关闭</span>
+                        <input
+                          type="time"
+                          value={policy.values.captureEnd}
+                          disabled={policy.follow.capture}
+                          onChange={(event) => updatePolicy("captureEnd", event.target.value)}
+                        />
+                      </label>
+                    </div>
+                    <div className="inline-note">
+                      可只填一个：仅自动开启=从该时间起保持采集；仅自动关闭=每日 00:00 起采集，到该时间停止。
+                    </div>
+                  </div>
+                )}
                 <div className="field-grid three">
                   <label className="form-field">
                     <span>告警冷却</span>
@@ -982,28 +1031,28 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
                 <input type="time" value={form.warModeEnd} onChange={(e) => update("warModeEnd", e.target.value)} disabled={!form.warModeEnabled} />
               </label>
             </div>
-            <div className="inline-note">非指定时段自动恢复普通模式。由服务端统一下发，原生端、Win7 和 APP 使用同一时段；不改变原始测量值。</div>
+            <div className="inline-note">非指定时段自动恢复普通模式。由服务端统一下发，原生端和 APP 使用同一时段；不改变原始测量值。</div>
           </section>)}
 
-          {canConfigure && (<section id="schedule-policy" className="panel settings-card">
+          {isSuper && (<section id="schedule-policy" className="panel settings-card">
             <div className="settings-card-head">
               <div className="settings-icon cyan"><Clock3 size={18} /></div>
               <div>
-                <h3>定时采集</h3>
-                <p>按服务器时间在指定时段自动开启采集，其余时间暂停。留空则始终手动控制。</p>
+                <h3>计划任务 · 全局默认</h3>
+                <p>由超级管理员维护全局默认自动开启/关闭时间；管理员可在设备独立策略中为单个节点覆盖。</p>
               </div>
             </div>
             <div className="field-grid">
               <label className="form-field">
-                <span>自动开启</span>
+                <span>自动开启（可留空）</span>
                 <input type="time" value={form.captureStart} onChange={(e) => update("captureStart", e.target.value)} />
               </label>
               <label className="form-field">
-                <span>自动暂停</span>
+                <span>自动关闭（可留空）</span>
                 <input type="time" value={form.captureEnd} onChange={(e) => update("captureEnd", e.target.value)} />
               </label>
             </div>
-            <div className="inline-note">每日重复，可跨午夜；相同时间表示全天，结束时间不包含在时段内。手动暂停优先，重新开启后仍需处于计划时段。客户端最迟在下次心跳同步（约 10 秒）。</div>
+            <div className="inline-note">每日重复，可跨午夜。只填自动开启：从该时间起保持采集；只填自动关闭：每日 00:00 起采集，到该时间停止；两个相同表示全天。手动暂停优先，客户端约 10 秒内同步。</div>
           </section>)}
 
           {isSuper && (<section id="password-policy" className="panel settings-card">

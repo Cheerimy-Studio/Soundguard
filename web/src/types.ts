@@ -13,6 +13,8 @@ export interface DeviceSettings {
   alertCooldownSecs: number | null;
   offlineTimeoutSecs: number | null;
   autoRecordEvidence: boolean | null;
+  captureStart: string | null;
+  captureEnd: string | null;
 }
 
 export interface NvidiaKeyState {

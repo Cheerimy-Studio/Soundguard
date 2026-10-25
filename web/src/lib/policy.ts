@@ -3,7 +3,10 @@ export function withinWindow(start: string, end: string, minute: number): boolea
   if (!start && !end) return true;
   const parse = (s: string) => /^\d{2}:\d{2}$/.test(s) ? Number(s.slice(0,2))*60+Number(s.slice(3)) : NaN;
   const a=parse(start), b=parse(end);
-  if (!Number.isFinite(a) || !Number.isFinite(b) || a>=1440 || b>=1440) return false;
+  if ((Number.isFinite(a) && a>=1440) || (Number.isFinite(b) && b>=1440)) return false;
+  if (Number.isFinite(a) && !Number.isFinite(b)) return minute>=a;
+  if (!Number.isFinite(a) && Number.isFinite(b)) return minute<b;
+  if (!Number.isFinite(a) && !Number.isFinite(b)) return false;
   return a===b || (a<b ? minute>=a && minute<b : minute>=a || minute<b);
 }
 export function policyState(settings: Settings, serverTime: string, offset=0) {

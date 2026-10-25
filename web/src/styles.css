@@ -5568,7 +5568,7 @@ input[type="range"]:disabled {
 .settings-card[id] {scroll-margin-top:24px;}
 .policy-status-strip {display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;padding:14px 20px;background:var(--card,#fff);border:1px solid var(--border,#e5e9ef);border-radius:12px;margin-bottom:18px;font-size:13px;}
 .policy-status-strip.is-war {background:#fffbeb;border-color:#f5d37b;color:#92400e;}
-.war-rank-panel {padding:20px;margin-bottom:18px;}
+.war-rank-panel {grid-column:1 / -1;padding:20px;margin-bottom:18px;}
 .war-rank-panel p {color:var(--muted,#758399);font-size:12px;}
 .war-rank-panel ol {margin-bottom:0;padding-left:24px;}
 .war-rank-panel li {padding:10px 4px;border-bottom:1px solid var(--border,#e5e9ef);}

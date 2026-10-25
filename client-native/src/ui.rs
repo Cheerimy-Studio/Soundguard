@@ -34,6 +34,28 @@ fn pill(ui: &mut egui::Ui, label: impl Into<String>, color: C, fill: C) {
             ui.label(R::new(label).size(11.0).color(color));
         });
 }
+fn horizontal_fade(p: &egui::Painter, rect: Rect, left: C, right: C) {
+    if rect.width() <= 0.0 {
+        return;
+    }
+    let mut mesh = egui::Mesh::default();
+    let start = mesh.vertices.len() as u32;
+    for (pos, color) in [
+        (rect.left_top(), left),
+        (rect.right_top(), right),
+        (rect.right_bottom(), right),
+        (rect.left_bottom(), left),
+    ] {
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos,
+            uv: egui::epaint::WHITE_UV,
+            color,
+        });
+    }
+    mesh.indices
+        .extend_from_slice(&[start, start + 1, start + 2, start, start + 2, start + 3]);
+    p.add(egui::Shape::mesh(mesh));
+}
 /// Soft vertical wash for the content area; keeps the cards visually lifted.
 fn paint_canvas(ui: &egui::Ui) {
     let rect = ui.max_rect();
@@ -230,9 +252,9 @@ impl eframe::App for SoundGuardApp {
         {
             100
         } else if self.phase == Phase::Running && self.status.policy.capturing() {
-            200
+            80
         } else {
-            800
+            500
         };
         ctx.request_repaint_after(std::time::Duration::from_millis(interval));
         self.frames += 1;
@@ -401,33 +423,74 @@ impl SoundGuardApp {
         egui::Window::new("使用须知")
             .title_bar(false)
             .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
-            .fixed_size(vec2(500.0, 380.0))
-            .frame(card())
+            .fixed_size(vec2(540.0, 452.0))
+            .frame(card().inner_margin(26.0))
             .show(ctx, |ui| {
                 ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                     brand_lockup(ui, ui.cursor().min, Some("使用须知"));
-                    ui.add_space(30.0);
-                    for (title, copy) in [
-                        ("通知与邮件", "开启后，声垣会向你推送超标通知，并向管理员设置的邮箱发送告警邮件。"),
-                        ("录音保存", "启用超标取证时，声垣会保存最近 30 秒的现场录音，供管理员在后台回放和取证。"),
-                        ("责任说明", "声垣仅提供声音监测数据，测量结果仅供参考，不作为任何处理决定的唯一依据。因现场环境、设备故障或使用不当造成的后果，由使用方自行承担。声垣保留对本须知及产品功能的最终解释权。"),
+                    ui.add_space(46.0);
+                    ui.label(R::new("开始前请确认").size(21.0).strong().color(TEXT));
+                    ui.label(
+                        R::new("声垣只做声音监测，不录音、不采集画面；以下内容与你的日常使用有关。")
+                            .size(12.0)
+                            .color(MUTED),
+                    );
+                    ui.add_space(16.0);
+                    for (index, title, copy) in [
+                        (
+                            "01",
+                            "通知与邮件",
+                            "超标时向本机推送提醒，并按管理端设置向管理员邮箱发送告警邮件。",
+                        ),
+                        (
+                            "02",
+                            "录音保存",
+                            "启用超标取证时，保留最近 30 秒现场录音，供管理员在后台回放和取证。",
+                        ),
+                        (
+                            "03",
+                            "责任说明",
+                            "测量结果仅供参考，不作为处理决定的唯一依据。因现场环境、设备故障或使用不当造成的后果由使用方承担。",
+                        ),
                     ] {
+                        ui.horizontal_top(|ui| {
+                            egui::Frame::none()
+                                .fill(C::from_rgb(230, 245, 243))
+                                .rounding(999.0)
+                                .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+                                .show(ui, |ui| {
+                                    ui.label(R::new(index).size(10.0).strong().color(TEAL));
+                                });
+                            ui.vertical(|ui| {
+                                ui.label(R::new(title).size(13.0).strong().color(TEXT));
+                                ui.label(R::new(copy).size(12.0).color(MUTED));
+                            });
+                        });
                         ui.add_space(12.0);
-                        ui.label(R::new(title).size(14.0).strong());
-                        ui.label(R::new(copy).size(12.0).color(MUTED));
                     }
                     if !self.error.is_empty() {
                         ui.colored_label(RED, &self.error);
                     }
-                    ui.add_space(16.0);
-                    ui.horizontal(|ui| {
-                        if button(ui, "退出", false).clicked() {
-                            self.request_exit();
-                        }
-                        if button(ui, "同意并继续", true).clicked() {
-                            self.accept_consent();
-                        }
-                    });
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+                    ui.label(
+                        R::new(format!("声垣 v{} · Cheerimy Studio", env!("CARGO_PKG_VERSION")))
+                            .size(10.0)
+                            .color(MUTED),
+                    );
+                    ui.add_space(12.0);
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            if button(ui, "同意并继续", true).clicked() {
+                                self.accept_consent();
+                            }
+                            if button(ui, "退出", false).clicked() {
+                                self.request_exit();
+                            }
+                        },
+                    );
                 });
             });
     }
@@ -537,21 +600,18 @@ impl SoundGuardApp {
                         pill(ui, "● 连接中", MUTED, C::from_rgb(241, 244, 247));
                     }
                 });
-                let bottom = ui.max_rect().bottom();
-                ui.painter().line_segment(
-                    [
-                        pos2(ui.max_rect().left(), bottom),
-                        pos2(ui.max_rect().right(), bottom),
-                    ],
-                    Stroke::new(1.0_f32, BORDER),
-                );
             });
         egui::TopBottomPanel::bottom("legacy-footer")
-            .exact_height(32.0)
+            .exact_height(40.0)
             .frame(
                 egui::Frame::none()
                     .fill(BG)
-                    .inner_margin(egui::Margin::symmetric(22.0, 8.0)),
+                    .inner_margin(egui::Margin {
+                        left: 22.0,
+                        right: 22.0,
+                        top: 9.0,
+                        bottom: 13.0,
+                    }),
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -627,70 +687,66 @@ impl SoundGuardApp {
                     pill(ui, label, color, fill);
                 });
             });
-            ui.add_space(8.0);
-            let threshold = self.status.policy.threshold_db;
-            let schedule = if self.status.policy.war() {
-                format!("分贝战争进行中 · 本时段不触发超标告警 · 阈值 {threshold:.0} dB")
-            } else if !self.status.policy.capturing() {
-                format!("采集已暂停 · 阈值 {threshold:.0} dB")
-            } else if !self.status.policy.capture_start.is_empty() {
-                format!(
-                    "计划采集 {} — {} · 阈值 {threshold:.0} dB · 30 秒平均",
-                    self.status.policy.capture_start, self.status.policy.capture_end
-                )
-            } else {
-                format!("管理员手动控制采集 · 阈值 {threshold:.0} dB · 30 秒平均")
-            };
-            ui.label(R::new(schedule).size(12.0).color(MUTED));
-            ui.add_space(10.0);
+            ui.add_space(6.0);
             let over = !self.status.policy.war()
                 && self
                     .average_db
                     .is_some_and(|v| v >= self.status.policy.threshold_db);
-            let (_, number_rect) = ui.allocate_space(vec2(ui.available_width(), 78.0));
+            let (_, number_rect) = ui.allocate_space(vec2(ui.available_width(), 84.0));
             let color = if over { RED } else { TEXT };
             let mut job = egui::text::LayoutJob::default();
             job.append(
                 &db(self.current_db),
                 0.0,
                 egui::TextFormat {
-                    font_id: FontId::new(78.0, egui::FontFamily::Name("legacy-numbers".into())),
+                    font_id: FontId::new(84.0, egui::FontFamily::Name("legacy-numbers".into())),
                     color,
-                    extra_letter_spacing: -4.68,
+                    extra_letter_spacing: -5.0,
                     ..Default::default()
                 },
             );
             let galley = ui.painter().layout_job(job);
             let number_width = galley.size().x;
             ui.painter()
-                .galley(number_rect.min + vec2(0.0, -9.0), galley, color);
+                .galley(number_rect.min + vec2(0.0, -8.0), galley, color);
             text(
                 ui.painter(),
-                number_rect.min + vec2(number_width + 8.0, 53.0),
+                number_rect.min + vec2(number_width + 8.0, 60.0),
                 13.0,
                 MUTED,
                 "dB(A)",
             );
-            ui.label(R::new("瞬时声压级").size(12.0).color(MUTED));
-            ui.add_space(12.0);
-            let (w, r) = ui.allocate_space(vec2(ui.available_width(), 5.0));
-            let _ = w;
-            ui.painter().rect_filled(r, 3.0, BORDER);
+            ui.add_space(2.0);
+            let (_, r) = ui.allocate_space(vec2(ui.available_width(), 7.0));
+            ui.painter().rect_filled(r, 4.0, C::from_rgb(233, 238, 244));
             if let Some(v) = self.current_db {
-                let fill = Rect::from_min_size(
-                    r.min,
-                    vec2(r.width() * ((v as f32 - 30.0) / 80.0).clamp(0.0, 1.0), 5.0),
+                let ratio = ((v as f32 - 30.0) / 80.0).clamp(0.0, 1.0);
+                let end_x = r.left() + r.width() * ratio;
+                let fade_start = (end_x - 88.0).max(r.left());
+                if fade_start > r.left() {
+                    ui.painter().rect_filled(
+                        Rect::from_min_max(r.min, pos2(fade_start, r.bottom())),
+                        4.0,
+                        accent,
+                    );
+                }
+                horizontal_fade(
+                    ui.painter(),
+                    Rect::from_min_max(pos2(fade_start, r.top()), pos2(end_x, r.bottom())),
+                    accent.gamma_multiply(0.05),
+                    accent,
                 );
-                ui.painter().rect_filled(fill, 3.0, accent);
+                ui.painter()
+                    .circle_filled(pos2(end_x, r.center().y), 4.5, accent);
             }
             let x = r.left()
                 + r.width()
                     * ((self.status.policy.threshold_db as f32 - 30.0) / 80.0).clamp(0.0, 1.0);
             ui.painter().line_segment(
-                [pos2(x, r.top() - 3.0), pos2(x, r.bottom() + 3.0)],
-                Stroke::new(1.0_f32, GOLD),
+                [pos2(x, r.top() - 4.0), pos2(x, r.bottom() + 4.0)],
+                Stroke::new(1.5_f32, GOLD),
             );
-            let (_, labels) = ui.allocate_space(vec2(r.width(), 12.0));
+            let (_, labels) = ui.allocate_space(vec2(r.width(), 14.0));
             for (i, n) in [30, 50, 70, 90, 110].iter().enumerate() {
                 ui.painter().text(
                     pos2(
@@ -707,7 +763,6 @@ impl SoundGuardApp {
                     MUTED,
                 );
             }
-
             ui.add_space(12.0);
             let width = ui.available_width();
             let values = [
@@ -724,30 +779,42 @@ impl SoundGuardApp {
                     "s",
                 ),
             ];
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 1.0;
-                for (i, (name, value, unit)) in values.into_iter().enumerate() {
-                    egui::Frame::none()
-                        .fill(C::from_rgb(248, 250, 252))
-                        .stroke(Stroke::new(1.0_f32, BORDER))
-                        .rounding(8.0)
-                        .inner_margin(11.0)
-                        .show(ui, |ui| {
-                            ui.set_width((width - 3.0) / 4.0 - 22.0);
-                            ui.vertical(|ui| {
-                                ui.label(R::new(name).size(12.0).color(MUTED));
-                                ui.horizontal(|ui| {
-                                    ui.label(R::new(value).size(18.0).strong().color(if i == 0 {
-                                        accent
-                                    } else {
-                                        TEXT
-                                    }));
-                                    ui.label(R::new(unit).size(12.0).color(MUTED));
-                                });
-                            });
-                        });
-                }
-            });
+            egui::Frame::none()
+                .fill(C::from_rgb(247, 249, 252))
+                .stroke(Stroke::new(1.0_f32, BORDER))
+                .rounding(12.0)
+                .inner_margin(egui::Margin::symmetric(14.0, 12.0))
+                .show(ui, |ui| {
+                    ui.set_width(width - 28.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        let cell = (ui.available_width() - 3.0) / 4.0;
+                        for (i, (name, value, unit)) in values.into_iter().enumerate() {
+                            if i > 0 {
+                                let (_, divider) = ui.allocate_space(vec2(1.0, 40.0));
+                                ui.painter().rect_filled(divider, 0.0, BORDER);
+                            }
+                            ui.allocate_ui_with_layout(
+                                vec2(cell, 44.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    ui.set_width(cell);
+                                    ui.label(R::new(name).size(11.0).color(MUTED));
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            R::new(value).size(19.0).strong().color(if i == 0 {
+                                                accent
+                                            } else {
+                                                TEXT
+                                            }),
+                                        );
+                                        ui.label(R::new(unit).size(11.0).color(MUTED));
+                                    });
+                                },
+                            );
+                        }
+                    });
+                });
             if over {
                 ui.add_space(12.0);
                 egui::Frame::none()
@@ -912,14 +979,6 @@ impl SoundGuardApp {
                 })
                 .collect();
             if points.len() > 1 {
-                let mut area = points.clone();
-                area.push(pos2(points.last().unwrap().x, plot.bottom()));
-                area.push(pos2(points.first().unwrap().x, plot.bottom()));
-                p.add(egui::Shape::convex_polygon(
-                    area,
-                    accent.gamma_multiply(0.10),
-                    Stroke::NONE,
-                ));
                 p.add(egui::Shape::line(points, Stroke::new(2.0_f32, accent)));
             }
         } else {
@@ -1239,20 +1298,21 @@ impl SoundGuardApp {
                             !self.reveal_token,
                         );
                         if ui
-                            .small_button(if self.reveal_token {
-                                "隐藏"
-                            } else {
-                                "显示"
-                            })
+                            .add(
+                                egui::Button::new(
+                                    R::new(if self.reveal_token { "隐藏令牌" } else { "显示令牌" })
+                                        .size(11.0)
+                                        .color(TEAL),
+                                )
+                                .fill(C::from_rgb(238, 247, 247))
+                                .stroke(Stroke::new(1.0_f32, C::from_rgb(199, 229, 229)))
+                                .rounding(999.0)
+                                .min_size(vec2(78.0, 26.0)),
+                            )
                             .clicked()
                         {
                             self.reveal_token = !self.reveal_token;
                         }
-                        ui.label(
-                            R::new("设备编号与令牌由管理端“设备连接”页面生成。")
-                                .size(12.0)
-                                .color(MUTED),
-                        );
                         ui.add_space(18.0);
                         ui.separator();
                         ui.add_space(18.0);
@@ -1322,11 +1382,6 @@ impl SoundGuardApp {
                                 .size(12.0)
                                 .color(MUTED),
                         );
-                        ui.label(
-                            R::new("校准后按保存才会应用；取消不会改变正在运行的配置。")
-                                .size(12.0)
-                                .color(MUTED),
-                        );
                         if ui
                             .add_sized(
                                 [ui.available_width(), 36.0],
@@ -1356,12 +1411,6 @@ impl SoundGuardApp {
                                 ui.colored_label(RED, error);
                             }
                         }
-                        ui.add_space(14.0);
-                        ui.label(
-                            R::new("降噪、阈值、通知、定时采集和分贝战争由管理端统一设置。")
-                                .size(12.0)
-                                .color(MUTED),
-                        );
                         ui.add_space(18.0);
                         ui.separator();
                         ui.add_space(14.0);
@@ -1373,11 +1422,6 @@ impl SoundGuardApp {
                         ui.label(
                             R::new(format!("配置文件：{}", self.config_path.display()))
                                 .size(9.0)
-                                .color(MUTED),
-                        );
-                        ui.label(
-                            R::new("开机自启由客户端安装程序设置，可在 Windows“启动应用”中关闭。")
-                                .size(10.0)
                                 .color(MUTED),
                         );
                         if !self.error.is_empty() {

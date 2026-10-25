@@ -1,10 +1,11 @@
 //! Daily policy clock shared by native and legacy Windows clients.
 use chrono::{DateTime, Timelike, Utc};
 use std::time::Instant;
+/// Daily capture window. One side may be empty:
+/// - neither set: manual control, always allowed;
+/// - start only: active from that minute until midnight;
+/// - end only: active from midnight until that minute.
 pub fn within_window(start: &str, end: &str, minute: u32) -> bool {
-    if start.is_empty() && end.is_empty() {
-        return true;
-    }
     let parse = |s: &str| -> Option<u32> {
         let (h, m) = s.split_once(':')?;
         let h: u32 = h.parse().ok()?;
@@ -16,10 +17,12 @@ pub fn within_window(start: &str, end: &str, minute: u32) -> bool {
         }
     };
     match (parse(start), parse(end)) {
+        (None, None) => true,
+        (Some(a), None) => minute >= a,
+        (None, Some(b)) => minute < b,
         (Some(a), Some(b)) if a < b => minute >= a && minute < b,
         (Some(a), Some(b)) if a > b => minute >= a || minute < b,
         (Some(_), Some(_)) => true,
-        _ => false,
     }
 }
 #[derive(Debug, Clone)]
@@ -52,7 +55,12 @@ mod tests {
         assert!(within_window("23:00", "01:00", 30));
         assert!(!within_window("23:00", "01:00", 60));
         assert!(within_window("08:00", "08:00", 700));
-        assert!(!within_window("08:00", "", 480));
+        assert!(!within_window("08:00", "", 470));
+        assert!(within_window("08:00", "", 480));
+        assert!(within_window("08:00", "", 510));
+        assert!(within_window("", "18:00", 600));
+        assert!(!within_window("", "18:00", 1200));
+        assert!(within_window("", "", 1200));
         assert!(!within_window("25:00", "08:00", 480));
     }
     #[test]

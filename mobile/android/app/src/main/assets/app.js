@@ -557,10 +557,12 @@
   }
 
   function windowActive(start, end, minute) {
-    if (!start && !end) return true;
     const parse = v => { const match = /^(\d{1,2}):(\d{2})$/.exec(v || ""); return match && +match[1]<24 && +match[2]<60 ? +match[1]*60 + +match[2] : NaN; };
     const a=parse(start), b=parse(end);
-    return Number.isFinite(a) && Number.isFinite(b) && (a===b || (a<b ? minute>=a && minute<b : minute>=a || minute<b));
+    if (!Number.isFinite(a) && !Number.isFinite(b)) return true;
+    if (Number.isFinite(a) && !Number.isFinite(b)) return minute>=a;
+    if (!Number.isFinite(a) && Number.isFinite(b)) return minute<b;
+    return a===b || (a<b ? minute>=a && minute<b : minute>=a || minute<b);
   }
   function currentPolicy() {
     const settings=state.settings || {};
@@ -574,8 +576,10 @@
     const device = state.device;
     if (!device) return;
     const policy = currentPolicy();
-    $("policySummary").textContent = state.settings?.captureStart
-      ? `计划 ${state.settings.captureStart} — ${state.settings.captureEnd} · 服务器时区 · 手动暂停优先`
+    const planStart = state.settings?.captureStart || "";
+    const planEnd = state.settings?.captureEnd || "";
+    $("policySummary").textContent = planStart || planEnd
+      ? `计划 ${planStart ? `每日 ${planStart} 自动开启` : "每日 00:00 起采集"}${planEnd ? ` · ${planEnd} 自动关闭` : " · 不自动关闭"} · 服务器时区`
       : "手动采集 · 由管理员控制";
     document.body.classList.toggle("war-mode", policy.war);
     const live = state.liveLatest;
@@ -648,7 +652,11 @@
     } else if (!state.wsConnected) {
       status = "实时通道正在重连…";
     }
-    if (!status && state.settings?.captureStart) status = `每日 ${state.settings.captureStart} — ${state.settings.captureEnd} · 服务器时区 · 手动暂停优先`;
+    if (!status && (state.settings?.captureStart || state.settings?.captureEnd)) {
+      status = state.settings.captureStart
+        ? `每日 ${state.settings.captureStart} 自动开启${state.settings.captureEnd ? ` · ${state.settings.captureEnd} 自动关闭` : " · 不自动关闭"} · 服务器时区`
+        : `每日 00:00 起采集 · ${state.settings.captureEnd} 自动关闭 · 服务器时区`;
+    }
     $("subStatus").textContent = status;
 
     $("callBtn").disabled = call.active;

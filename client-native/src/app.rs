@@ -256,7 +256,7 @@ impl SoundGuardApp {
             self.rolling_15s_db = s.rolling_15s_db;
             self.peak_db = s.peak_db;
             self.progress = s.progress;
-            if self.last_wave.elapsed() >= Duration::from_secs(1) {
+            if self.last_wave.elapsed() >= Duration::from_millis(250) {
                 self.last_wave = Instant::now();
                 let now = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
                 if let Some(db) = s.current_db {

@@ -123,6 +123,8 @@ export function DevicesPage({
           edit.autoRecordEvidence === ""
             ? null
             : edit.autoRecordEvidence === "true",
+        captureStart: edit.device.settings.captureStart,
+        captureEnd: edit.device.settings.captureEnd,
       });
       setEdit(null);
       await onDevicesUpdated();

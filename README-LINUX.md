@@ -141,7 +141,7 @@ sudo ufw allow 8080/tcp
 
 ## Windows 采集端与安卓端
 
-- Windows 采集端使用 `dist/soundguard-client-native.exe` 或客户端安装包 `dist/soundguard-client-setup-0.2.0.exe`，服务器地址填 Linux 服务器的局域网 IP 或 HTTPS 域名。
+- Windows 采集端使用 `dist/soundguard-client-native.exe` 或客户端安装包 `dist/soundguard-client-setup-0.2.1.exe`，服务器地址填 Linux 服务器的局域网 IP 或 HTTPS 域名。
 - 安卓端使用 `dist/soundguard-android-0.1.0.apk`，首次启动先检测服务器连接，再输入用户名和密码。
 - 设备令牌在管理端「设备连接」中添加设备时生成一次，填入 Windows 客户端设置。
 

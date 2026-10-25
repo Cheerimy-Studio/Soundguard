@@ -2221,3 +2221,21 @@ input[type="range"]::-webkit-slider-thumb {
 .war-item.is-first .war-db { color: #b45309 !important; }
 
 .role-chip.update_admin {background:#eef0ff;color:#4f46a5;}
+
+
+/* Device schedule overrides */
+.device-schedule-block {
+  margin: 14px 0 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card-soft);
+}
+.device-schedule-block h4 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+}
+.device-schedule-block .field-grid {
+  margin-top: 10px;
+}

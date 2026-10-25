@@ -107,6 +107,7 @@ try {
   await req('/device/control', { token: operator, body: { deviceId: 'room-b', monitoring: false }, status: 403 });
   await req('/device/heartbeat', { deviceToken: deviceB.token, body: { deviceId: 'room-a', monitoring: true }, status: 401 });
   await req('/devices/room-a/settings', { ...auth, method: 'PUT', body: { thresholdDb: 55 } });
+  await req('/devices/room-a/settings', { token: operator, method: 'PUT', body: { captureStart: '08:00' }, status: 403 }); checks++;
   const heartbeat = (await req('/device/heartbeat', { deviceToken: deviceA.token, body: { deviceId: 'room-a', monitoring: true } })).body;
   assert.equal(heartbeat.thresholdDb, 55);
 
@@ -127,17 +128,18 @@ try {
 
   await req('/settings',{...managerAuth,method:'PUT',body:{...globalSettings,retentionDays:7},status:403});
   await req('/settings',{...managerAuth,method:'PUT',body:{...globalSettings,fixedPasswordHash:'new-secret-password'},status:403});
+  await req('/settings',{...managerAuth,method:'PUT',body:{...globalSettings,captureStart:'06:00',captureEnd:'07:00'},status:403}); checks++;
   await req('/settings/nvidia-key', {...managerAuth,status:403});
   await req('/update/apply',{...managerAuth,body:{},status:403});
   const serverDate=new Date(Date.parse(heartbeat.serverTime)+heartbeat.serverUtcOffsetSecs*1000);
   const minute=serverDate.getUTCHours()*60+serverDate.getUTCMinutes();
   const hhmm=m=>`${String(Math.floor((m%1440)/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;
-  await req('/settings',{...managerAuth,method:'PUT',body:{...globalSettings,captureStart:hhmm(minute+3),captureEnd:hhmm(minute+4)}});
+  await req('/settings',{...auth,method:'PUT',body:{...globalSettings,captureStart:hhmm(minute+3),captureEnd:hhmm(minute+4)}});
   const beat=async()=>(await req('/device/heartbeat',{deviceToken:deviceA.token,body:{deviceId:'room-a',monitoring:false}})).body;
   assert.equal((await beat()).desiredMonitoring,false,'legacy heartbeat must obey schedule');checks++;
   await req('/device/control',{...managerAuth,body:{deviceId:'room-a',monitoring:true}});
   assert.equal((await beat()).desiredMonitoring,false,'manual resume must not bypass schedule');checks++;
-  await req('/settings',{...managerAuth,method:'PUT',body:{...globalSettings,captureStart:'00:00',captureEnd:'00:00',warModeEnabled:true,warModeStart:'00:00',warModeEnd:'00:00'}});
+  await req('/settings',{...auth,method:'PUT',body:{...globalSettings,captureStart:'00:00',captureEnd:'00:00',warModeEnabled:true,warModeStart:'00:00',warModeEnd:'00:00'}});
   const warBeat=await beat();assert.equal(warBeat.desiredMonitoring,true);assert.equal(warBeat.manualMonitoring,true);assert.equal(warBeat.warActive,true);checks++;
   const appStatus=(await req('/devices/room-a/status',{token:operator})).body;assert.equal(appStatus.warActive,true);assert.equal(appStatus.captureWindowActive,true);checks++;
   await req('/device/control',{...managerAuth,body:{deviceId:'room-a',monitoring:false}});
@@ -152,8 +154,17 @@ try {
   const managerSnapshot=await managerWs.wait(m=>m.type==='snapshot');assert.ok(managerSnapshot.data.devices.some(d=>d.id==='room-b'));checks++;
   const normalized=(await req('/settings',{...auth,method:'PUT',body:{...globalSettings,captureStart:'7:3',captureEnd:'9:5'}})).body;
   assert.equal(normalized.settings.captureStart,'07:03');assert.equal(normalized.settings.captureEnd,'09:05');checks++;
-  await req('/settings',{...auth,method:'PUT',body:{...globalSettings,captureStart:'07:00',captureEnd:''},status:400});
+  const startOnly=(await req('/settings',{...auth,method:'PUT',body:{...globalSettings,captureStart:'07:00',captureEnd:''}})).body;
+  assert.equal(startOnly.settings.captureStart,'07:00'); assert.equal(startOnly.settings.captureEnd,''); checks++;
+  const endOnly=(await req('/settings',{...auth,method:'PUT',body:{...globalSettings,captureStart:'',captureEnd:'19:00'}})).body;
+  assert.equal(endOnly.settings.captureStart,''); assert.equal(endOnly.settings.captureEnd,'19:00'); checks++;
   await req('/settings',{...auth,method:'PUT',body:globalSettings});
+  const managerDeviceSchedule=(await req('/devices/room-a/settings',{...managerAuth,method:'PUT',body:{captureStart:'08:00',captureEnd:'09:30'}})).body;
+  assert.equal(managerDeviceSchedule.settings.captureStart,'08:00'); assert.equal(managerDeviceSchedule.settings.captureEnd,'09:30'); checks++;
+  const deviceScheduleBeat=(await req('/device/heartbeat',{deviceToken:deviceA.token,body:{deviceId:'room-a',monitoring:true}})).body;
+  assert.equal(deviceScheduleBeat.captureStart,'08:00'); assert.equal(deviceScheduleBeat.captureEnd,'09:30'); checks++;
+  await req('/devices/room-a/settings',{token:operator,method:'PUT',body:{captureStart:'07:00',captureEnd:''},status:403});
+  await req('/devices/room-a/settings',{...auth,method:'PUT',body:{captureStart:null,captureEnd:null}});
   const live = { deviceId: 'room-a', currentDb: 61, averageDb: 60, peakDb: 65, capturing: true };
   await req('/device/live', { deviceToken: deviceA.token, body: live });
   const audio = wav();

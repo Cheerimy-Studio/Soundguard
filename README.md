@@ -446,6 +446,20 @@ npm run build:web
 cargo check --manifest-path client-native/Cargo.toml
 ```
 
+版本号与发布：
+
+```powershell
+# 递增补丁号（自动同步 package.json、Cargo.toml、Cargo.lock、Android、NSIS）
+npm run version:bump
+# 或指定 minor / major / x.y.z
+node scripts/bump-version.mjs minor
+
+# 一键递增版本并重建 Web、服务端、原生客户端和安装包
+npm run release
+```
+
+每次交付都应先执行版本递增；Android versionCode 会按 `major*10000+minor*100+patch` 自动计算。
+
 已验证的核心链路：
 
 - 管理员登录、JWT、设置同步；

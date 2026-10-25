@@ -404,7 +404,8 @@ mod tests {
         assert!(within_window("22:00", "06:00", 23 * 60));
         assert!(!within_window("22:00", "06:00", 12 * 60));
         assert!(within_window("", "", 0));
-        assert!(!within_window("09:00", "", 600));
+        assert!(!within_window("09:00", "", 480));
+        assert!(within_window("09:00", "", 600));
     }
     #[test]
     fn websocket_url_encodes_tokens() {
