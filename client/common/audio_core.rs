@@ -197,7 +197,10 @@ struct RingBuffer {
     samples: VecDeque<f32>,
 }
 
+pub type PcmBlock = (u32, Vec<f32>);
+
 pub struct AudioShared {
+    pcm_tap: Mutex<Option<std::sync::mpsc::SyncSender<PcmBlock>>>,
     capturing: AtomicBool,
     suspended: AtomicBool,
     ready: AtomicBool,
@@ -223,6 +226,7 @@ pub struct AudioShared {
 impl AudioShared {
     pub fn new(offset_db: f32) -> Arc<Self> {
         Arc::new(Self {
+            pcm_tap: Mutex::new(None),
             capturing: AtomicBool::new(true),
             suspended: AtomicBool::new(false),
             ready: AtomicBool::new(false),
@@ -270,8 +274,9 @@ impl AudioShared {
     /// configurations, and the evidence ring only holds one configuration.
     pub fn set_denoise(&self, mode: u8, voice_enhance: bool) {
         let mode = mode.min(DENOISE_STRONG);
-        let changed = self.denoise_mode.swap(mode, Ordering::SeqCst) != mode
-            || self.voice_enhance.swap(voice_enhance, Ordering::SeqCst) != voice_enhance;
+        let mode_changed = self.denoise_mode.swap(mode, Ordering::SeqCst) != mode;
+        let voice_changed = self.voice_enhance.swap(voice_enhance, Ordering::SeqCst) != voice_enhance;
+        let changed = mode_changed || voice_changed;
         if changed {
             if let Some(engine) = self
                 .engine
@@ -394,7 +399,20 @@ impl AudioShared {
         }
     }
 
+    pub fn set_pcm_tap(&self, sender: Option<std::sync::mpsc::SyncSender<PcmBlock>>) {
+        *self.pcm_tap.lock().unwrap_or_else(|p| p.into_inner()) = sender;
+    }
+
     pub fn push_block(&self, samples: &[f32], channels: usize, sample_rate: u32) {
+        if channels > 0 {
+            if let Some(tx) = self.pcm_tap.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
+                let mono = samples.chunks_exact(channels).map(|f| {
+                    let v = f.iter().copied().sum::<f32>() / channels as f32;
+                    if v.is_finite() { v.clamp(-1.0, 1.0) } else { 0.0 }
+                }).collect();
+                let _ = tx.try_send((sample_rate, mono));
+            }
+        }
         if channels == 0 || samples.is_empty() || !self.capturing() || self.suspended() {
             return;
         }
@@ -673,6 +691,13 @@ fn encode_wav_i16(samples: &[f32], sample_rate: u32) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn simultaneous_denoise_and_voice_changes_are_applied() {
+        let shared=AudioShared::new(90.0);
+        shared.set_denoise(DENOISE_STRONG,true);
+        assert_eq!(shared.denoise_mode.load(Ordering::SeqCst),DENOISE_STRONG);
+        assert!(shared.voice_enhance.load(Ordering::SeqCst));
+    }
     #[test]
     fn steady_environmental_noise_is_not_attenuated_over_time() {
         let shared = AudioShared::new(90.0);

@@ -27,38 +27,28 @@ fn hotp(secret: &[u8], counter: u64) -> u32 {
 
 /// Generate the current TOTP code for a base32-encoded secret.
 #[allow(dead_code)] // used by client JS, not server directly
-pub fn totp_now(base32_secret: &str) -> Result<String, String> {
-    let secret = decode_base32(base32_secret)?;
-    let counter = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| format!("系统时间异常: {e}"))?
-        .as_secs()
-        / TOTP_STEP_SECS;
-    Ok(format!("{:06}", hotp(&secret, counter)))
-}
-
-/// Verify a TOTP code allowing ±1 step of clock drift.
-pub fn totp_verify(base32_secret: &str, code: &str) -> bool {
-    let secret = match decode_base32(base32_secret) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    let code_num: u32 = match code.trim().parse() {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        / TOTP_STEP_SECS;
-    for offset in [-1i64, 0, 1] {
-        let counter = (now as i64 + offset) as u64;
-        if hotp(&secret, counter) == code_num {
-            return true;
-        }
+pub fn totp_code(secret: &str, seconds: u64) -> Result<String, String> {
+    let decoded = decode_base32(secret)?;
+    if decoded.is_empty() {
+        return Err("TOTP 密钥为空".into());
     }
-    false
+    Ok(format!("{:06}", hotp(&decoded, seconds / TOTP_STEP_SECS)))
+}
+#[cfg(test)]
+pub fn totp_now(secret: &str) -> Result<String, String> {
+    totp_code(secret, chrono::Utc::now().timestamp().max(0) as u64)
+}
+pub fn totp_verify_at(secret: &str, code: &str, seconds: u64) -> bool {
+    if code.len() != 6 || !code.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    [-30i64, 0, 30].iter().any(|offset| {
+        totp_code(secret, seconds.saturating_add_signed(*offset))
+            .is_ok_and(|expected| expected == code)
+    })
+}
+pub fn totp_verify(secret: &str, code: &str) -> bool {
+    totp_verify_at(secret, code, chrono::Utc::now().timestamp().max(0) as u64)
 }
 
 /// Generate a random base32-encoded secret (20 bytes = 160 bits).
@@ -90,6 +80,9 @@ pub fn encode_base32(data: &[u8]) -> String {
 }
 
 pub fn decode_base32(encoded: &str) -> Result<Vec<u8>, String> {
+    if encoded.is_empty() || !encoded.is_ascii() {
+        return Err("Base32 密钥为空或包含非 ASCII 字符".into());
+    }
     let mut bit_buffer = 0u32;
     let mut bit_count = 0;
     let mut output = Vec::new();

@@ -1,31 +1,32 @@
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
-
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 mod app;
+#[cfg_attr(not(windows), allow(dead_code))] // WASAPI backend is intentionally Windows-only.
 mod audio;
 mod config;
 mod net;
+mod playback;
+#[path = "../../client/common/rnnoise_engine.rs"]
+mod rnnoise_engine;
 mod rtc;
-#[allow(unused_imports)]
-use rtc::*;
 mod totp;
 mod ui;
-
 use eframe::egui;
-
 fn main() -> Result<(), eframe::Error> {
+    let compact = std::env::args().any(|a| a == "--preview-compact");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size(egui::Vec2::new(960.0, 640.0))
-            .with_min_inner_size(egui::Vec2::new(720.0, 480.0))
-            .with_title("声垣 SoundGuard")
-            .with_icon(load_icon()),
+            .with_inner_size(if compact {
+                [900.0, 640.0]
+            } else {
+                [1120.0, 760.0]
+            })
+            .with_min_inner_size([900.0, 640.0])
+            .with_title("声垣")
+            .with_decorations(false),
         ..Default::default()
     };
-
     eframe::run_native(
-        "声垣 SoundGuard",
+        "声垣",
         options,
         Box::new(|cc| {
             setup_style(&cc.egui_ctx);
@@ -33,50 +34,65 @@ fn main() -> Result<(), eframe::Error> {
         }),
     )
 }
-
 fn setup_style(ctx: &egui::Context) {
-    let mut v = egui::Visuals::light();
-    v.panel_fill = egui::Color32::from_rgb(244, 246, 248);
-    v.window_fill = egui::Color32::WHITE;
-    v.widgets.inactive.bg_fill = egui::Color32::WHITE;
-    v.widgets.inactive.fg_stroke.color = egui::Color32::from_rgb(50, 60, 70);
-    v.widgets.hovered.bg_fill = egui::Color32::from_rgb(13, 138, 146);
-    v.widgets.active.bg_fill = egui::Color32::from_rgb(11, 122, 130);
-    v.selection.bg_fill = egui::Color32::from_rgb(13, 138, 146);
-    ctx.set_visuals(v);
-
+    let mut style = (*ctx.style()).clone();
+    style.visuals = egui::Visuals::light();
+    style.visuals.panel_fill = egui::Color32::from_rgb(244, 246, 248);
+    style.visuals.window_fill = egui::Color32::WHITE;
+    style.visuals.override_text_color = Some(egui::Color32::from_rgb(23, 32, 51));
+    style.visuals.selection.bg_fill = egui::Color32::from_rgb(207, 236, 238);
+    style.visuals.widgets.inactive.bg_stroke =
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(213, 221, 231));
+    style.visuals.extreme_bg_color = egui::Color32::WHITE;
+    style.visuals.window_rounding = egui::Rounding::same(15.0);
+    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+    ctx.set_style(style);
     let mut fonts = egui::FontDefinitions::default();
-    for p in ["C:\\Windows\\Fonts\\msyh.ttc", "C:\\Windows\\Fonts\\msyh.ttf", "C:\\Windows\\Fonts\\simsun.ttc"] {
-        if let Ok(d) = std::fs::read(p) {
-            fonts.font_data.insert("zh".to_owned(), egui::FontData::from_owned(d));
-            if let Some(fam) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
-                fam.insert(0, "zh".to_owned());
+    fonts.font_data.insert(
+        "soundguard-cjk".into(),
+        egui::FontData::from_static(include_bytes!("../assets/NotoSansCJKsc-Regular.otf")),
+    );
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .push("soundguard-cjk".into());
+    fonts
+        .families
+        .entry(egui::FontFamily::Monospace)
+        .or_default()
+        .push("soundguard-cjk".into());
+    // Same Windows font families as the legacy WebView; bundled CJK stays the portable fallback.
+    #[cfg(windows)]
+    for (name, file) in [
+        ("legacy-ui", "segoeui.ttf"),
+        ("legacy-cjk", "msyh.ttc"),
+        ("legacy-numbers", "seguisb.ttf"),
+    ] {
+        let root = std::env::var_os("WINDIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| "C:\\Windows".into());
+        if let Ok(data) = std::fs::read(root.join("Fonts").join(file)) {
+            fonts
+                .font_data
+                .insert(name.into(), egui::FontData::from_owned(data));
+            if name != "legacy-numbers" {
+                fonts
+                    .families
+                    .entry(egui::FontFamily::Proportional)
+                    .or_default()
+                    .insert(if name == "legacy-ui" { 0 } else { 1 }, name.into());
             }
-            if let Some(fam) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
-                fam.push("zh".to_owned());
-            }
-            break;
         }
     }
+    let numbers = if fonts.font_data.contains_key("legacy-numbers") {
+        "legacy-numbers"
+    } else {
+        "soundguard-cjk"
+    };
+    fonts.families.insert(
+        egui::FontFamily::Name("legacy-numbers".into()),
+        vec![numbers.into()],
+    );
     ctx.set_fonts(fonts);
-}
-
-fn load_icon() -> egui::IconData {
-    let size = 32usize;
-    let mut px: Vec<u8> = Vec::with_capacity(size * size * 4);
-    let c = size as f32 / 2.0;
-    for y in 0..size {
-        for x in 0..size {
-            let dx = x as f32 - c;
-            let dy = y as f32 - c;
-            let dist = (dx * dx + dy * dy).sqrt();
-            let inside = dist < c * 0.85;
-            let r: u8 = if inside { 13 } else { 0 };
-            let g: u8 = if inside { 138 } else { 0 };
-            let b: u8 = if inside { 146 } else { 0 };
-            let a: u8 = if inside { 255 } else { 0 };
-            px.extend_from_slice(&[r, g, b, a]);
-        }
-    }
-    egui::IconData { rgba: px, width: size as u32, height: size as u32 }
 }

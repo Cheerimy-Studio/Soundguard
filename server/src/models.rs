@@ -63,6 +63,29 @@ fn default_war_mode_end() -> String {
 }
 
 impl Settings {
+    pub fn war_active(&self, now: chrono::DateTime<chrono::Local>) -> bool {
+        use chrono::Timelike;
+        self.war_mode_enabled
+            && Self::time_window(
+                &self.war_mode_start,
+                &self.war_mode_end,
+                now.hour() * 60 + now.minute(),
+            )
+    }
+    pub fn time_window(start: &str, end: &str, minute: u32) -> bool {
+        let parse = |s: &str| -> Option<u32> {
+            let (h, m) = s.split_once(':')?;
+            let h: u32 = h.parse().ok()?;
+            let m: u32 = m.parse().ok()?;
+            (h < 24 && m < 60).then_some(h * 60 + m)
+        };
+        match (parse(start), parse(end)) {
+            (Some(a), Some(b)) if a < b => minute >= a && minute < b,
+            (Some(a), Some(b)) if a > b => minute >= a || minute < b,
+            (Some(_), Some(_)) => true,
+            _ => false,
+        }
+    }
     pub fn validate_and_normalize(&mut self) -> Result<(), String> {
         if !self.threshold_db.is_finite() || !(30.0..=130.0).contains(&self.threshold_db) {
             return Err("分贝阈值必须在 30–130 dB 之间".to_string());
@@ -121,6 +144,13 @@ impl Settings {
                     return Err(format!("{name} 格式应为 HH:MM"));
                 }
             }
+        }
+        if self.capture_start.is_empty() != self.capture_end.is_empty() {
+            return Err("定时采集开始与结束时间必须同时填写".into());
+        }
+        if self.war_mode_enabled && (self.war_mode_start.is_empty() || self.war_mode_end.is_empty())
+        {
+            return Err("开启分贝战争时请填写完整时段".into());
         }
         if !matches!(
             self.denoise_mode.as_str(),
@@ -502,6 +532,7 @@ impl CallRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[allow(clippy::enum_variant_names)] // Public role names are part of persisted user records.
 pub enum UserRole {
     SuperAdmin,
     /// Senior operator: can manage devices, users, settings, and evidence
@@ -761,6 +792,7 @@ pub struct HeartbeatResponse {
     pub evidence_seconds: u32,
     pub auto_record_evidence: bool,
     pub server_time: DateTime<Utc>,
+    pub server_utc_offset_secs: i32,
     pub ice_servers: Value,
     pub device_id: String,
     pub device_name: String,
@@ -888,6 +920,7 @@ pub struct OverviewResponse {
     pub alert_count_today: usize,
     pub smtp_configured: bool,
     pub server_time: DateTime<Utc>,
+    pub server_utc_offset_secs: i32,
     pub ice_servers: Value,
     pub signaling_connected: bool,
 }

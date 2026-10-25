@@ -38,3 +38,5 @@ mobile/android/keystore/
 # release binaries, local backups
 dist/
 backups/
+
+client-native/app-dir/

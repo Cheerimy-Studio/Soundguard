@@ -8,8 +8,7 @@ license = "MIT"
 [dependencies]
 # GUI framework
 egui = "0.28"
-eframe = { version = "0.28", default-features = false, features = ["default_fonts", "glow"] }
-egui_plot = "0.28"
+eframe = { version = "0.28", default-features = false, features = ["default_fonts", "glow", "x11"] }
 
 # Async runtime + networking
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
@@ -25,7 +24,7 @@ uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 
 # Audio capture (reuses WASAPI via wasapi crate in audio.rs)
-wasapi = "0.26"
+
 
 # Audio output for intercom playback
 
@@ -43,13 +42,25 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 sha1 = "0.10"
 hmac = "0.12"
 
+rodio = { version = "0.20", default-features = false }
+symphonia = { version = "0.5", features = ["all"] }
+opus = "0.3"
+
 # Misc
+image = { version = "0.25", default-features = false, features = ["png"] }
 anyhow = "1"
+rand = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(windows)'.dependencies]
+wasapi = "0.26"
 
 [profile.release]
 opt-level = "s"
 lto = true
 codegen-units = 1
 strip = true
+
+[dev-dependencies]
+webrtc-util = "0.8.1"

@@ -170,8 +170,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/alerts/{id}/evidence", get(get_evidence))
         .route("/alerts/{id}/evidence/denoise", post(denoise_evidence))
         .route("/alerts/{id}/evidence/denoised", get(get_denoised_evidence))
-        .route("/settings/nvidia-key", put(set_nvidia_key).get(get_nvidia_key))
-        .route("/device/totp", get(device_totp_secret).post(device_totp_verify))
+        .route(
+            "/settings/nvidia-key",
+            put(set_nvidia_key).get(get_nvidia_key),
+        )
+        .route(
+            "/device/totp",
+            get(device_totp_secret).post(device_totp_verify),
+        )
         .route("/device/war-mode", get(get_war_mode))
         .route("/war-mode/leaderboard", get(war_leaderboard))
         .route("/update/check", get(check_update))
@@ -743,11 +749,12 @@ async fn update_notifications(
             snapshot.settings.clone()
         })
         .await?;
-    state
-        .hub
-        .broadcast_event("settings", serde_json::to_value(&saved).unwrap_or_default());
+    state.hub.broadcast_event(
+        "settings",
+        serde_json::to_value(public_settings(saved.clone())).unwrap_or_default(),
+    );
     Ok(Json(SettingsResponse {
-        settings: saved,
+        settings: public_settings(saved),
         smtp_configured: state.mailer.configured(),
         ice_servers: state.config.ice_servers.clone(),
     }))
@@ -1129,6 +1136,7 @@ async fn overview(
         settings.alert_recipients.clear();
         settings.report_recipients.clear();
     }
+    settings.fixed_password_hash.clear();
     let view = device.view(now, settings.offline_timeout_secs);
     Ok(Json(OverviewResponse {
         devices: device_views(&snapshot, now, &admin.user),
@@ -1139,6 +1147,7 @@ async fn overview(
         alert_count_today,
         smtp_configured: state.mailer.configured(),
         server_time: now,
+        server_utc_offset_secs: Local::now().offset().local_minus_utc(),
         ice_servers: state.config.ice_servers.clone(),
         signaling_connected: state.hub.device_connected(&device.id).await,
     }))
@@ -1463,9 +1472,7 @@ async fn get_denoised_evidence(
         .store
         .read_evidence(&den_name)
         .await?
-        .ok_or_else(|| {
-            AppError::not_found("尚未生成降噪版本，请先点击“AI 降噪试听”")
-        })?;
+        .ok_or_else(|| AppError::not_found("尚未生成降噪版本，请先点击“AI 降噪试听”"))?;
     let mut response = Response::new(Body::from(bytes));
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("audio/wav"));
@@ -1481,6 +1488,11 @@ async fn get_denoised_evidence(
     Ok(response)
 }
 
+fn public_settings(mut settings: Settings) -> Settings {
+    settings.fixed_password_hash.clear();
+    settings
+}
+
 async fn get_settings(
     admin: Admin,
     State(state): State<AppState>,
@@ -1488,7 +1500,7 @@ async fn get_settings(
     admin.require_super()?;
     let snapshot = state.store.snapshot().await;
     Ok(Json(SettingsResponse {
-        settings: snapshot.settings,
+        settings: public_settings(snapshot.settings),
         smtp_configured: state.mailer.configured(),
         ice_servers: state.config.ice_servers.clone(),
     }))
@@ -1500,6 +1512,17 @@ async fn update_settings(
     Json(mut settings): Json<Settings>,
 ) -> Result<Json<SettingsResponse>, AppError> {
     admin.require_super()?;
+    let previous = state.store.settings().await;
+    if settings.fixed_password_hash.is_empty() {
+        settings.fixed_password_hash = previous.fixed_password_hash.clone();
+    } else if settings.fixed_password_hash != previous.fixed_password_hash {
+        if settings.fixed_password_hash.starts_with("$argon2") {
+            return Err(AppError::bad_request("不能提交密码哈希，请输入新密码"));
+        }
+        validate_password(&settings.fixed_password_hash).map_err(AppError::bad_request)?;
+        settings.fixed_password_hash =
+            password_hash_job(&state, &settings.fixed_password_hash).await?;
+    }
     settings
         .validate_and_normalize()
         .map_err(AppError::bad_request)?;
@@ -1510,11 +1533,12 @@ async fn update_settings(
             settings
         })
         .await?;
-    state
-        .hub
-        .broadcast_event("settings", serde_json::to_value(&saved).unwrap_or_default());
+    state.hub.broadcast_event(
+        "settings",
+        serde_json::to_value(public_settings(saved.clone())).unwrap_or_default(),
+    );
     Ok(Json(SettingsResponse {
-        settings: saved,
+        settings: public_settings(saved),
         smtp_configured: state.mailer.configured(),
         ice_servers: state.config.ice_servers.clone(),
     }))
@@ -1602,9 +1626,9 @@ async fn control_device(
     Ok(Json(DeviceControlResponse {
         device: view,
         settings: if admin.is_super() {
-            settings
+            public_settings(settings)
         } else {
-            let mut public = settings;
+            let mut public = public_settings(settings);
             public.alert_recipients.clear();
             public.report_recipients.clear();
             public
@@ -2002,6 +2026,7 @@ async fn device_heartbeat(
         evidence_seconds: settings.evidence_seconds,
         auto_record_evidence: settings.auto_record_evidence,
         server_time: now,
+        server_utc_offset_secs: Local::now().offset().local_minus_utc(),
         ice_servers: state.config.ice_servers.clone(),
         device_id: device.id,
         device_name: device.name,
@@ -2056,7 +2081,6 @@ async fn device_telemetry(
     let avg_db = round1(request.avg_db);
     let peak_db = round1(request.peak_db);
     let min_db = round1(request.min_db.unwrap_or(avg_db).min(avg_db));
-    let over_threshold = avg_db >= settings.threshold_db;
     let recorded_at = request
         .recorded_at
         .filter(|time| {
@@ -2064,6 +2088,8 @@ async fn device_telemetry(
                 && *time >= now - Duration::days(settings.retention_days as i64)
         })
         .unwrap_or(now);
+    let over_threshold =
+        avg_db >= settings.threshold_db && !settings.war_active(recorded_at.with_timezone(&Local));
     let cooldown_elapsed = device
         .last_high_alert_at
         .map(|last| {
@@ -2563,10 +2589,7 @@ struct WsQuery {
     device_id: Option<String>,
 }
 
-
-async fn check_update(
-    admin: Admin,
-) -> Result<Json<crate::update::UpdateCheck>, AppError> {
+async fn check_update(admin: Admin) -> Result<Json<crate::update::UpdateCheck>, AppError> {
     admin.require_update_admin()?;
     let result = crate::update::check_github()
         .await
@@ -2614,7 +2637,6 @@ async fn apply_update(
     })))
 }
 
-
 /// Device endpoint: provision the TOTP secret (only sent once per setup).
 async fn device_totp_secret(
     _credential: DeviceAuth,
@@ -2623,7 +2645,15 @@ async fn device_totp_secret(
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let device_id = query.get("deviceId").cloned().unwrap_or_default();
-    let device = authenticate_device_query(&state, headers.get("x-device-token").and_then(|v| v.to_str().ok()).unwrap_or_default(), &device_id).await?;
+    let device = authenticate_device_query(
+        &state,
+        headers
+            .get("x-device-token")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default(),
+        &device_id,
+    )
+    .await?;
     Ok(Json(json!({
         "totpSecret": device.totp_secret,
         "hasFixedPassword": !state.store.settings().await.fixed_password_hash.is_empty(),
@@ -2637,28 +2667,44 @@ async fn device_totp_verify(
     headers: HeaderMap,
     Json(request): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let device_id = request.get("deviceId").and_then(|v| v.as_str()).unwrap_or_default();
-    let code = request.get("code").and_then(|v| v.as_str()).unwrap_or_default();
-    let device = authenticate_device_query(&state, headers.get("x-device-token").and_then(|v| v.to_str().ok()).unwrap_or_default(), device_id).await?;
+    let device_id = request
+        .get("deviceId")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let code = request
+        .get("code")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let device = authenticate_device_query(
+        &state,
+        headers
+            .get("x-device-token")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default(),
+        device_id,
+    )
+    .await?;
     let settings = state.store.settings().await;
 
-    // Try fixed password first (offline mode)
+    let now = Utc::now();
+    ensure_pin_unlocked(&device, now)?;
+    let mut verified = false;
     if !settings.fixed_password_hash.is_empty() {
-        if {
-            use argon2::{Argon2, PasswordHash, PasswordVerifier};
-            PasswordHash::new(&settings.fixed_password_hash)
-                .ok()
-                .and_then(|parsed| Argon2::default().verify_password(code.as_bytes(), &parsed).ok())
-                .is_some()
-        } {
-            return Ok(Json(json!({ "verified": true, "method": "password" })));
-        }
+        verified = password_verify_job(
+            &state,
+            settings.fixed_password_hash.clone(),
+            code.to_string(),
+        )
+        .await?;
     }
-    // Try TOTP
-    if !device.totp_secret.is_empty() && crate::totp::totp_verify(&device.totp_secret, code) {
-        return Ok(Json(json!({ "verified": true, "method": "totp" })));
+    verified |=
+        !device.totp_secret.is_empty() && crate::totp::totp_verify(&device.totp_secret, code);
+    if verified {
+        reset_pin_failures(&state, &device.id).await?;
+        return Ok(Json(json!({"verified":true})));
     }
-    Ok(Json(json!({ "verified": false })))
+    record_pin_failure(&state, &device, &settings, now, "操作").await?;
+    Ok(Json(json!({"verified":false})))
 }
 
 /// Admin endpoint: current war mode state.
@@ -2670,6 +2716,9 @@ async fn get_war_mode(
     let settings = state.store.settings().await;
     Ok(Json(json!({
         "enabled": settings.war_mode_enabled,
+        "active": settings.war_active(Local::now()),
+        "serverTime": Utc::now(),
+        "serverUtcOffsetSecs": Local::now().offset().local_minus_utc(),
         "start": settings.war_mode_start,
         "end": settings.war_mode_end,
     })))
@@ -2686,17 +2735,25 @@ async fn war_leaderboard(
         .devices
         .iter()
         .filter(|d| d.live_avg_db.is_some())
-        .map(|d| json!({
-            "id": d.id,
-            "name": d.name,
-            "avgDb": d.live_avg_db,
-            "peakDb": d.peak_db,
-            "online": d.live_avg_db.is_some(),
-        }))
+        .map(|d| {
+            json!({
+                "id": d.id,
+                "name": d.name,
+                "avgDb": d.live_avg_db,
+                "peakDb": d.peak_db,
+                "online": d.is_online(Utc::now(), snapshot.settings.offline_timeout_secs),
+            })
+        })
         .collect();
     devices.sort_by(|a, b| {
-        let a_db = a.get("avgDb").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
-        let b_db = b.get("avgDb").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+        let a_db = a
+            .get("avgDb")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0);
+        let b_db = b
+            .get("avgDb")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0);
         b_db.partial_cmp(&a_db).unwrap_or(std::cmp::Ordering::Equal)
     });
     Ok(Json(json!({ "leaderboard": devices })))
@@ -2733,7 +2790,7 @@ async fn initial_admin_message(state: &AppState, user: &CurrentUser) -> String {
         .filter(|(device_id, _)| user.can_access_device(device_id))
         .map(|(device_id, connected)| (device_id, Value::Bool(connected)))
         .collect();
-    let mut settings = snapshot.settings.clone();
+    let mut settings = public_settings(snapshot.settings.clone());
     if !user.is_super() {
         settings.alert_recipients.clear();
         settings.report_recipients.clear();

@@ -1,159 +1,397 @@
-//! WebRTC intercom with G711 μ-law codec + WASAPI audio playback.
-
-use std::sync::Arc;
-use std::time::Duration;
-
-use webrtc::api::media_engine::MIME_TYPE_PCMA;
-use webrtc::api::APIBuilder;
-use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
-use webrtc::peer_connection::configuration::RTCConfiguration;
-use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
-use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
-
-const MULAW_BIAS: i32 = 0x84;
-const MULAW_CLIP: i32 = 32635;
-
+//! Browser-compatible PCMU (G.711 μ-law), with ICE/TURN and bounded media tasks.
+use crate::{audio::AudioEngineHandle, playback::AudioOutput};
+use futures_util::FutureExt;
+use serde_json::{json, Value};
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
+use tokio::sync::mpsc::UnboundedSender;
+use webrtc::{
+    api::{
+        media_engine::{MediaEngine, MIME_TYPE_PCMU},
+        APIBuilder,
+    },
+    ice_transport::ice_server::RTCIceServer,
+    peer_connection::{
+        configuration::RTCConfiguration, sdp::session_description::RTCSessionDescription,
+        RTCPeerConnection,
+    },
+    rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType},
+    track::track_local::track_local_static_sample::TrackLocalStaticSample,
+};
 pub fn pcm_to_mulaw(pcm: &[f32]) -> Vec<u8> {
-    pcm.iter().map(|&s| {
-        let raw = (s.clamp(-1.0, 1.0) * 32767.0) as i16 as i32;
-        let sign = if raw < 0 { 0x80i32 } else { 0 };
-        let mag = raw.abs().min(MULAW_CLIP) + MULAW_BIAS;
-        let exp = if mag < 0x100 { 0 }
-            else if mag < 0x200 { 1 }
-            else if mag < 0x400 { 2 }
-            else if mag < 0x800 { 3 }
-            else if mag < 0x1000 { 4 }
-            else if mag < 0x2000 { 5 }
-            else if mag < 0x4000 { 6 }
-            else { 7 };
-        let man = (mag >> (exp + 3)) & 0x0F;
-        (!(sign | (exp << 4) | man)) as u8
-    }).collect()
+    pcm.iter()
+        .map(|s| {
+            let raw = (s.clamp(-1.0, 1.0) * 32767.0) as i32;
+            let sign = if raw < 0 { 0x80 } else { 0 };
+            let mag = raw.abs().min(32635) + 132;
+            let exp = (0..7).find(|e| mag < (0x100 << e)).unwrap_or(7);
+            (!(sign | (exp << 4) | ((mag >> (exp + 3)) & 15))) as u8
+        })
+        .collect()
 }
-
 pub fn mulaw_to_pcm(data: &[u8]) -> Vec<f32> {
-    data.iter().map(|&b| {
-        let u = (!(b as i32)) & 0xFF;
-        let sign = if u & 0x80 != 0 { -1i32 } else { 1i32 };
-        let exp = (u >> 4) & 0x07;
-        let man = u & 0x0F;
-        let mag = (((man << 3) + MULAW_BIAS) << exp) - MULAW_BIAS;
-        (sign * mag) as f32 / 32768.0
-    }).collect()
+    data.iter()
+        .map(|b| {
+            let u = !*b;
+            let mag = (((i32::from(u & 15) << 3) + 132) << ((u >> 4) & 7)) - 132;
+            if u & 128 != 0 {
+                -(mag as f32) / 32768.0
+            } else {
+                mag as f32 / 32768.0
+            }
+        })
+        .collect()
 }
-
-pub struct CallSession {
-    pub peer: Arc<webrtc::peer_connection::RTCPeerConnection>,
-    pub send_track: Arc<TrackLocalStaticSample>,
-    pub call_id: String,
-    pub mode: String,
+pub fn ice_servers(value: Value) -> Result<Vec<RTCIceServer>, String> {
+    let list = value.as_array().ok_or("ICE 配置必须为数组")?;
+    list.iter()
+        .map(|v| {
+            let urls = if let Some(s) = v["urls"].as_str() {
+                vec![s.to_string()]
+            } else {
+                serde_json::from_value::<Vec<String>>(v["urls"].clone())
+                    .map_err(|_| "ICE urls 无效")?
+            };
+            Ok(RTCIceServer {
+                urls,
+                username: v["username"].as_str().unwrap_or("").into(),
+                credential: v["credential"].as_str().unwrap_or("").into(),
+                credential_type:
+                    webrtc::ice_transport::ice_credential_type::RTCIceCredentialType::Password,
+            })
+        })
+        .collect()
 }
-
-impl CallSession {
-    pub async fn new_answerer(offer_sdp: &str, call_id: &str, mode: &str) -> Result<(Self, String), String> {
-        let mut media = webrtc::api::media_engine::MediaEngine::default();
-        media.register_default_codecs().map_err(|e| format!("codecs: {e}"))?;
-        let api = APIBuilder::new().with_media_engine(media).build();
-        let peer = api.new_peer_connection(RTCConfiguration::default()).await.map_err(|e| format!("peer: {e}"))?;
-        let codec = RTCRtpCodecCapability { mime_type: MIME_TYPE_PCMA.to_string(), clock_rate: 8000, channels: 1, ..Default::default() };
-        let send_track = Arc::new(TrackLocalStaticSample::new(codec, "audio".to_string(), "soundguard".to_string()));
-        peer.add_track(send_track.clone()).await.map_err(|e| format!("track: {e}"))?;
-        let offer = RTCSessionDescription::offer(offer_sdp.to_string()).map_err(|e| format!("offer: {e}"))?;
-        peer.set_remote_description(offer).await.map_err(|e| format!("remote: {e}"))?;
-        let answer = peer.create_answer(None).await.map_err(|e| format!("answer: {e}"))?;
-        peer.set_local_description(answer.clone()).await.map_err(|e| format!("local: {e}"))?;
-        Ok((Self { peer: Arc::new(peer), send_track, call_id: call_id.to_string(), mode: mode.to_string() }, answer.sdp))
+struct PeerOnError(Option<Arc<RTCPeerConnection>>);
+impl Drop for PeerOnError {
+    fn drop(&mut self) {
+        if let Some(peer) = self.0.take() {
+            if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                rt.spawn(async move {
+                    let _ = peer.close().await;
+                });
+            }
+        }
     }
-
-    pub async fn send_audio_48k(&self, pcm_48k: &[f32]) {
-        let pcm_8k: Vec<f32> = pcm_48k.iter().step_by(6).copied().collect();
-        let mulaw = pcm_to_mulaw(&pcm_8k);
-        if mulaw.is_empty() { return; }
-        let sample = webrtc::media::Sample {
-            data: bytes::Bytes::from(mulaw),
-            duration: Duration::from_millis(20),
+}
+pub struct CallSession {
+    pub peer: Arc<RTCPeerConnection>,
+    pub call_id: String,
+    pub muted: Arc<AtomicBool>,
+    alive: Arc<AtomicBool>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+    pub output: AudioOutput,
+}
+impl CallSession {
+    pub async fn answer(
+        offer: &str,
+        id: &str,
+        mode: &str,
+        ice: Value,
+        audio: &AudioEngineHandle,
+        signal: UnboundedSender<Value>,
+    ) -> Result<(Self, String), String> {
+        Self::answer_with_output(
+            offer,
+            id,
+            mode,
+            ice,
+            audio,
+            signal,
+            AudioOutput::new()?,
+            Default::default(),
+        )
+        .await
+    }
+    pub async fn answer_with_output(
+        offer: &str,
+        id: &str,
+        mode: &str,
+        ice: Value,
+        audio: &AudioEngineHandle,
+        signal: UnboundedSender<Value>,
+        output: AudioOutput,
+        settings: webrtc::api::setting_engine::SettingEngine,
+    ) -> Result<(Self, String), String> {
+        let mut media = MediaEngine::default();
+        let codec = RTCRtpCodecCapability {
+            mime_type: MIME_TYPE_PCMU.into(),
+            clock_rate: 8000,
+            channels: 1,
             ..Default::default()
         };
-        let _ = self.send_track.write_sample(&sample).await;
+        media
+            .register_codec(
+                RTCRtpCodecParameters {
+                    capability: codec.clone(),
+                    payload_type: 0,
+                    ..Default::default()
+                },
+                RTPCodecType::Audio,
+            )
+            .map_err(|e| e.to_string())?;
+        let ice_servers = ice_servers(ice)?;
+        let api = APIBuilder::new()
+            .with_setting_engine(settings)
+            .with_media_engine(media)
+            .build();
+        let peer = Arc::new(
+            api.new_peer_connection(RTCConfiguration {
+                ice_servers,
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| e.to_string())?,
+        );
+        let mut cleanup = PeerOnError(Some(peer.clone()));
+        let alive = Arc::new(AtomicBool::new(true));
+        let muted = Arc::new(AtomicBool::new(false));
+        let input_track = Arc::new(TrackLocalStaticSample::new(
+            codec,
+            "audio".into(),
+            "soundguard".into(),
+        ));
+        let sender = peer
+            .add_track(input_track.clone())
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut tasks = vec![tokio::spawn(async move {
+            while sender.read_rtcp().await.is_ok() {}
+        })];
+        let signal2 = signal.clone();
+        let call_id = id.to_string();
+        peer.on_ice_candidate(Box::new(move |candidate|{let tx=signal2.clone();let id=call_id.clone();async move{if let Some(c)=candidate{if let Ok(c)=c.to_json(){let _=tx.send(json!({"type":"signal","callId":id,"payload":{"kind":"ice","candidate":c}}));}}}.boxed()}));
+        let duck = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+        let remote_duck = duck.clone();
+        let speaker = output.clone();
+        peer.on_track(Box::new(move |track, _, _| {
+            let output = speaker.clone();
+            let duck = remote_duck.clone();
+            async move {
+                while let Ok((packet, _)) = track.read_rtp().await {
+                    let pcm = mulaw_to_pcm(&packet.payload);
+                    let rms =
+                        (pcm.iter().map(|s| s * s).sum::<f32>() / pcm.len().max(1) as f32).sqrt();
+                    if rms > 0.015 {
+                        *duck.lock().unwrap() =
+                            std::time::Instant::now() + Duration::from_millis(280);
+                    }
+                    output.pcm(1, 8000, pcm);
+                }
+            }
+            .boxed()
+        }));
+        peer.set_remote_description(
+            RTCSessionDescription::offer(offer.into()).map_err(|e| e.to_string())?,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        let answer = peer.create_answer(None).await.map_err(|e| e.to_string())?;
+        peer.set_local_description(answer)
+            .await
+            .map_err(|e| e.to_string())?;
+        let sdp = peer.local_description().await.ok_or("没有本地 SDP")?.sdp;
+        if mode != "broadcast" {
+            let (tx, rx) = std::sync::mpsc::sync_channel(8);
+            audio.shared.set_pcm_tap(Some(tx));
+            let live = alive.clone();
+            let (pcm_tx, mut pcm_rx) = tokio::sync::mpsc::channel::<Vec<f32>>(8);
+            tasks.push(tokio::task::spawn_blocking(move || {
+                let mut pending = Vec::new();
+                while live.load(Ordering::SeqCst) {
+                    if let Ok((rate, samples)) = rx.recv_timeout(Duration::from_millis(100)) {
+                        let ratio = (rate / 8000).max(1) as usize;
+                        for chunk in samples.chunks_exact(ratio) {
+                            pending.push(chunk.iter().sum::<f32>() / ratio as f32);
+                        }
+                        while pending.len() >= 160 {
+                            let packet: Vec<_> = pending.drain(..160).collect();
+                            let _ = pcm_tx.try_send(packet);
+                        }
+                    }
+                }
+            }));
+            let mute = muted.clone();
+            tasks.push(tokio::spawn(async move {
+                while let Some(mut pcm) = pcm_rx.recv().await {
+                    if mute.load(Ordering::SeqCst)
+                        || std::time::Instant::now() < *duck.lock().unwrap()
+                    {
+                        pcm.fill(0.0);
+                    }
+                    let sample = webrtc::media::Sample {
+                        data: bytes::Bytes::from(pcm_to_mulaw(&pcm)),
+                        duration: Duration::from_millis(20),
+                        ..Default::default()
+                    };
+                    if input_track.write_sample(&sample).await.is_err() {
+                        break;
+                    }
+                }
+            }));
+        }
+        cleanup.0 = None;
+        Ok((
+            Self {
+                peer,
+                call_id: id.into(),
+                muted,
+                alive,
+                tasks,
+                output,
+            },
+            sdp,
+        ))
     }
-
-    #[allow(dead_code)]
-    pub async fn close(&self) {
+    pub async fn close(&mut self) {
+        self.alive.store(false, Ordering::SeqCst);
+        for task in self.tasks.drain(..) {
+            task.abort();
+        }
+        self.output.stop();
         let _ = self.peer.close().await;
     }
 }
-
-pub struct AudioOutput {
-    buffer: Arc<std::sync::Mutex<Vec<f32>>>,
-}
-
-impl AudioOutput {
-    pub fn new() -> Result<Self, String> {
-        let buffer = Arc::new(std::sync::Mutex::new(Vec::<f32>::with_capacity(80000)));
-        let buf = buffer.clone();
-        std::thread::Builder::new().name("sg-speaker".to_string()).spawn(move || {
-            let _ = wasapi::initialize_mta();
-            if let Err(e) = speaker_loop(buf) { eprintln!("speaker: {e}"); }
-        }).map_err(|e| format!("speaker thread: {e}"))?;
-        Ok(Self { buffer })
-    }
-
-    pub fn push_mulaw(&self, mulaw_data: &[u8]) {
-        let pcm = mulaw_to_pcm(mulaw_data);
-        self.buffer.lock().unwrap().extend_from_slice(&pcm);
-        let mut b = self.buffer.lock().unwrap();
-        if b.len() > 80000 { let excess = b.len() - 40000; b.drain(..excess); }
-    }
-}
-
-fn speaker_loop(buffer: Arc<std::sync::Mutex<Vec<f32>>>) -> Result<(), String> {
-    use wasapi::{DeviceEnumerator, Direction, Role, SampleType, StreamMode, WaveFormat};
-    let enum_ = DeviceEnumerator::new().map_err(|e| format!("enum: {e}"))?;
-    let dev = enum_.get_default_device_for_role(&Direction::Render, &Role::Communications)
-        .or_else(|_| enum_.get_default_device(&Direction::Render))
-        .map_err(|e| format!("speaker: {e}"))?;
-    let mut ac = dev.get_iaudioclient().map_err(|e| format!("cl: {e}"))?;
-    let fmt = WaveFormat::new(32, 32, &SampleType::Float, 48000, 2, None);
-    let (_, mp) = ac.get_device_period().map_err(|e| format!("pd: {e}"))?;
-    let mode = StreamMode::EventsShared { autoconvert: true, buffer_duration_hns: mp };
-    ac.initialize_client(&fmt, &Direction::Render, &mode).map_err(|e| format!("in: {e}"))?;
-    let ev = ac.set_get_eventhandle().map_err(|e| format!("ev: {e}"))?;
-    let render = ac.get_audiorenderclient().map_err(|e| format!("rc: {e}"))?;
-    ac.start_stream().map_err(|e| format!("st: {e}"))?;
-    let fb = fmt.get_blockalign() as usize;
-    let mut out: Vec<u8> = Vec::with_capacity(fb * 2048);
-    loop {
-        if ev.wait_for_event(100).is_err() { continue; }
-        let mut s8: Vec<f32> = Vec::new();
-        { let mut b = buffer.lock().unwrap(); let take = (b.len()/160)*160; if take>0 { s8 = b.drain(..take).collect(); } }
-        out.clear();
-        if s8.is_empty() {
-            out.resize(fb * 240, 0);
-        } else {
-            for &s in &s8 {
-                for _ in 0..6 {
-                    let by = s.to_le_bytes();
-                    out.extend_from_slice(&by);
-                    out.extend_from_slice(&by);
-                }
-            }
+impl Drop for CallSession {
+    fn drop(&mut self) {
+        self.alive.store(false, Ordering::SeqCst);
+        for task in &self.tasks {
+            task.abort();
         }
-        if !out.is_empty() { let n = out.len() / fb; let _ = render.write_to_device(n, &out, None); }
+        self.output.stop();
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn mulaw_roundtrip() {
-        let input: Vec<f32> = (0..1000).map(|i| (i as f32 / 500.0 - 1.0) * 0.8).collect();
-        let encoded = pcm_to_mulaw(&input);
-        let decoded = mulaw_to_pcm(&encoded);
-        assert_eq!(input.len(), decoded.len());
-        for (o, d) in input.iter().zip(decoded.iter()) {
-            assert!((o - d).abs() < 0.15, "mulaw err: {} at {}", (o - d).abs(), o);
+    fn g711_browser_vectors() {
+        assert_eq!(pcm_to_mulaw(&[0.0]), vec![255]);
+        assert_eq!(mulaw_to_pcm(&[255]), vec![0.0]);
+        for s in [-0.8, -0.1, 0.0, 0.1, 0.8] {
+            assert!((mulaw_to_pcm(&pcm_to_mulaw(&[s]))[0] - s).abs() < 0.04);
         }
+    }
+}
+
+#[cfg(test)]
+mod interoperability {
+    use super::*;
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn negotiates_pcmu_with_browser_style_ice_and_transmits_rtp() {
+        let mut media = MediaEngine::default();
+        media.register_default_codecs().unwrap();
+        use webrtc_util::vnet::{
+            net::{Net, NetConfig},
+            router::{Router, RouterConfig},
+        };
+        let router = Arc::new(tokio::sync::Mutex::new(
+            Router::new(RouterConfig {
+                cidr: "1.2.3.0/24".into(),
+                ..Default::default()
+            })
+            .unwrap(),
+        ));
+        let mut settings = Vec::new();
+        for ip in ["1.2.3.4", "1.2.3.5"] {
+            let net = Arc::new(Net::new(Some(NetConfig {
+                static_ips: vec![ip.into()],
+                ..Default::default()
+            })));
+            let nic = net.get_nic().unwrap();
+            router.lock().await.add_net(nic.clone()).await.unwrap();
+            nic.lock().await.set_router(router.clone()).await.unwrap();
+            let mut engine = webrtc::api::setting_engine::SettingEngine::default();
+            engine.set_vnet(Some(net));
+            settings.push(engine);
+        }
+        router.lock().await.start().await.unwrap();
+        let api = APIBuilder::new()
+            .with_setting_engine(settings.remove(0))
+            .with_media_engine(media)
+            .build();
+        let peer = api
+            .new_peer_connection(RTCConfiguration::default())
+            .await
+            .unwrap();
+        let track = Arc::new(TrackLocalStaticSample::new(
+            RTCRtpCodecCapability {
+                mime_type: MIME_TYPE_PCMU.into(),
+                clock_rate: 8000,
+                channels: 1,
+                ..Default::default()
+            },
+            "browser-audio".into(),
+            "browser".into(),
+        ));
+        peer.add_track(track).await.unwrap();
+        let (received_tx, mut received) = tokio::sync::mpsc::channel(1);
+        peer.on_track(Box::new(move |track, _, _| {
+            let tx = received_tx.clone();
+            async move {
+                if let Ok((packet, _)) = track.read_rtp().await {
+                    let _ = tx.send(packet.payload.to_vec()).await;
+                }
+            }
+            .boxed()
+        }));
+        let mut gathering = peer.gathering_complete_promise().await;
+        let offer = peer.create_offer(None).await.unwrap();
+        peer.set_local_description(offer).await.unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(3), gathering.recv()).await;
+        let audio = AudioEngineHandle::start(90.0);
+        let (tx, mut signals) = tokio::sync::mpsc::unbounded_channel();
+        let (mut call, answer) = CallSession::answer_with_output(
+            &peer.local_description().await.unwrap().sdp,
+            "test-call",
+            "intercom",
+            json!([]),
+            &audio,
+            tx,
+            AudioOutput::test_null(),
+            settings.remove(0),
+        )
+        .await
+        .unwrap();
+        assert!(answer.contains("PCMU/8000"));
+        assert!(!answer.contains("a=rtpmap:8 PCMA"));
+        peer.set_remote_description(RTCSessionDescription::answer(answer).unwrap())
+            .await
+            .unwrap();
+        let ice_task = tokio::spawn(async move {
+            while let Some(v) = signals.recv().await {
+                if let Ok(c) = serde_json::from_value(v["payload"]["candidate"].clone()) {
+                    let _ = peer.add_ice_candidate(c).await;
+                }
+            }
+        });
+        for _ in 0..100 {
+            audio.test_signal();
+            if call.peer.connection_state()
+                == webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        for _ in 0..20 {
+            audio.test_signal();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let packet = tokio::time::timeout(Duration::from_secs(4), received.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(packet.len(), 160);
+        call.close().await;
+        audio.shared.set_pcm_tap(None);
+        ice_task.abort();
+        audio.stop();
+        router.lock().await.stop().await.unwrap();
     }
 }

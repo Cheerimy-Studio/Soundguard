@@ -8,6 +8,16 @@ pub struct PasswordGuard {
 }
 
 impl PasswordGuard {
+    pub fn check_unlocked(&self) -> Result<(), String> {
+        if self
+            .locked_until
+            .is_some_and(|until| until > Instant::now())
+        {
+            Err("密码错误过多，请 5 分钟后重试".into())
+        } else {
+            Ok(())
+        }
+    }
     pub fn verify(&mut self, check: impl FnOnce() -> bool) -> Result<(), String> {
         let now = Instant::now();
         if self.locked_until.is_some_and(|until| until > now) {

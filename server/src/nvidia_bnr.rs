@@ -184,15 +184,16 @@ pub fn decode_wav_mono16(bytes: &[u8]) -> Result<(Vec<i16>, u32), String> {
         .chunks_exact(channels as usize * 2)
         .map(|frame| {
             let sum: i32 = frame
-                .chunks_exact(2)
-                .map(|pair| i16::from_le_bytes(pair.try_into().unwrap()) as i32)
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|pair| i16::from_le_bytes(*pair) as i32)
                 .sum();
             (sum / channels as i32).clamp(i16::MIN as i32, i16::MAX as i32) as i16
         })
         .collect();
     Ok((frames, sample_rate))
 }
-
 
 fn request_frames(samples_f32: &[f32], intensity: f32) -> Vec<Vec<u8>> {
     let mut frames = Vec::new();
@@ -280,9 +281,7 @@ async fn denoise_wav_once(
     }
     let (samples_i16, sample_rate) = decode_wav_mono16(wav)?;
     if sample_rate != 48_000 {
-        return Err(format!(
-            "证据采样率为 {sample_rate} Hz，BNR 仅支持 48 kHz"
-        ));
+        return Err(format!("证据采样率为 {sample_rate} Hz，BNR 仅支持 48 kHz"));
     }
     let samples_f32: Vec<f32> = samples_i16
         .iter()
@@ -335,8 +334,8 @@ async fn denoise_wav_once(
         reader.push(&chunk);
         while let Some(payload) = reader.next_frame() {
             if let Some(data) = response_audio(&payload) {
-                for pair in data.chunks_exact(4) {
-                    audio_f32.push(f32::from_le_bytes(pair.try_into().unwrap()));
+                for pair in data.as_chunks::<4>().0 {
+                    audio_f32.push(f32::from_le_bytes(*pair));
                 }
             }
         }
@@ -404,14 +403,19 @@ mod tests {
     #[test]
     fn response_audio_extracts_bytes_and_ignores_config() {
         let audio = EnhanceAudioResponse {
-            stream_output: Some(enhance_audio_response::StreamOutput::AudioStreamData(
-                vec![9, 8, 7],
-            )),
+            stream_output: Some(enhance_audio_response::StreamOutput::AudioStreamData(vec![
+                9, 8, 7,
+            ])),
         };
-        assert_eq!(response_audio(&audio.encode_to_vec()).unwrap(), vec![9, 8, 7]);
+        assert_eq!(
+            response_audio(&audio.encode_to_vec()).unwrap(),
+            vec![9, 8, 7]
+        );
         let config = EnhanceAudioResponse {
             stream_output: Some(enhance_audio_response::StreamOutput::Config(
-                EnhanceAudioConfig { intensity_ratio: None },
+                EnhanceAudioConfig {
+                    intensity_ratio: None,
+                },
             )),
         };
         assert!(response_audio(&config.encode_to_vec()).is_none());

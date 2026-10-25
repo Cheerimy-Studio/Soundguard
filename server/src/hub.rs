@@ -15,7 +15,6 @@ struct DeviceConnection {
 struct CallSession {
     owner: Uuid,
     call_id: String,
-    created_at: std::time::Instant,
 }
 
 #[derive(Clone)]
@@ -99,51 +98,13 @@ impl Hub {
             .is_some_and(|c| c.id == id)
     }
 
-    /// Sessions older than this are treated as stale and replaced regardless
-    /// of owner, preventing a dead admin page from blocking future calls.
-    const STALE_SESSION_SECS: u64 = 120;
-
     pub async fn claim_call(&self, device_id: &str, owner: Uuid, call_id: &str) -> bool {
         let mut calls = self.calls.lock().await;
         match calls.get(device_id) {
             // Same admin + same call = keepalive for the existing session.
             Some(call) if call.owner == owner && call.call_id == call_id => true,
-            // Same admin + new call = the previous call from this admin is
-            // dead (page refresh, dropped socket). Replace it instead of
-            // blocking the admin with "another administrator is calling".
-            Some(call) if call.owner == owner => {
-                tracing::warn!(
-                    "Replacing stale call session for device {device_id}                      (old call {}, new call {call_id})",
-                    call.call_id
-                );
-                calls.insert(
-                    device_id.to_string(),
-                    CallSession {
-                        owner,
-                        call_id: call_id.to_string(),
-                        created_at: std::time::Instant::now(),
-                    },
-                );
-                true
-            }
-            // Any session older than STALE_SESSION_SECS is considered dead;
-            // replace it so a hung admin cannot block the device forever.
-            Some(call) if call.created_at.elapsed().as_secs() > Self::STALE_SESSION_SECS => {
-                tracing::warn!(
-                    "Expiring stale call session for device {device_id}                      (age {}s, owner {})",
-                    call.created_at.elapsed().as_secs(),
-                    call.owner
-                );
-                calls.insert(
-                    device_id.to_string(),
-                    CallSession {
-                        owner,
-                        call_id: call_id.to_string(),
-                        created_at: std::time::Instant::now(),
-                    },
-                );
-                true
-            }
+            // A live call may never be replaced by another call, including
+            // another tab/session of the same administrator. Disconnect cleanup releases it.
             // A different admin has an active, recent session = reject.
             Some(_) => false,
             None => {
@@ -152,7 +113,6 @@ impl Hub {
                     CallSession {
                         owner,
                         call_id: call_id.to_string(),
-                        created_at: std::time::Instant::now(),
                     },
                 );
                 true
@@ -219,5 +179,22 @@ impl Hub {
         if let Ok(value) = serde_json::to_value(alert) {
             self.broadcast_event("alert", value);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn active_call_is_exclusive_until_explicit_release() {
+        let hub = Hub::new();
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        assert!(hub.claim_call("room", first, "first-call").await);
+        assert!(hub.claim_call("room", first, "first-call").await);
+        assert!(!hub.claim_call("room", first, "another-call").await);
+        assert!(!hub.claim_call("room", second, "second-call").await);
+        hub.disconnect_call_device("room").await;
+        assert!(hub.claim_call("room", second, "second-call").await);
     }
 }
