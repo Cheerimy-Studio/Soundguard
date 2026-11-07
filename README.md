@@ -241,7 +241,7 @@ npm run build:client:win7
 
 脚本会调用 `scripts/build-win7.ps1`，使用 `client-native/win7-libs` 中的 Windows 导入库，
 并把 `combase.dll` 导入重定向到 `ole32.dll`，产物为 `dist\soundguard-client-win7.exe`。
-Win7 安装包为 `dist\soundguard-client-win7-setup-0.2.3.exe`，支持开机自启。
+Win7 安装包为 `dist\soundguard-client-win7-setup-0.2.4.exe`，支持开机自启。
 
 ### 4.6 安卓 App
 

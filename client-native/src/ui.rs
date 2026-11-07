@@ -866,8 +866,9 @@ impl SoundGuardApp {
         let mut values: Vec<f64> = self.waveform.iter().map(|p| p[1]).collect();
         values.push(self.status.policy.threshold_db);
         values.extend(self.average_db);
-        let lo = (values.iter().copied().fold(30.0, f64::min) / 10.0).floor() * 10.0;
-        let hi = ((values.iter().copied().fold(80.0, f64::max) + 6.0) / 10.0).ceil() * 10.0;
+        let lo = 0.0_f64;
+        let hi = ((values.iter().copied().fold(80.0, f64::max) / 20.0).ceil() * 20.0)
+            .max(80.0);
         let y = |db: f64| {
             plot.bottom() - ((db - lo) / (hi - lo)).clamp(0.0, 1.0) as f32 * plot.height()
         };
@@ -940,7 +941,8 @@ impl SoundGuardApp {
                 .enumerate()
                 .map(|(index, v)| {
                     pos2(
-                        plot.left() + (index as f32 / (buffer - 1.0)) * plot.width(),
+                        plot.left()
+                            + ((index as f32 / (buffer - 1.0)).min(1.0)) * plot.width(),
                         y(v[1]),
                     )
                 })

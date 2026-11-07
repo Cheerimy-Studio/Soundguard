@@ -131,8 +131,9 @@ export function HistoryPage({ threshold, deviceId, onNotify }: HistoryPageProps)
       },
       yAxis: {
         type: "value",
-        min: 30,
-        max: Math.ceil(maxValue / 10) * 10,
+        min: 0,
+        max: Math.max(80, Math.ceil(maxValue / 20) * 20),
+        interval: 20,
         splitNumber: 5,
         axisLine: { show: false },
         axisTick: { show: false },

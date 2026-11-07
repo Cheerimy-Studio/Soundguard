@@ -222,6 +222,10 @@ impl SoundGuardApp {
                     self.waveform.push([now, db]);
                 }
                 self.waveform.retain(|p| p[0] >= now - 30.0);
+                if self.waveform.len() > 300 {
+                    let excess = self.waveform.len() - 300;
+                    self.waveform.drain(0..excess);
+                }
             }
             self.status = self.net.poll();
             if self.status.call_state == "idle" {

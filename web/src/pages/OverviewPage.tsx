@@ -175,8 +175,9 @@ export function OverviewPage({
       },
       yAxis: {
         type: "value",
-        min: 30,
-        max: Math.ceil(maxValue / 10) * 10,
+        min: 0,
+        max: Math.max(80, Math.ceil(maxValue / 20) * 20),
+        interval: 20,
         splitNumber: 4,
         axisLine: { show: false },
         axisTick: { show: false },

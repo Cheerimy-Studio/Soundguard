@@ -779,10 +779,10 @@
           }));
 
     const peakValues = points.map((point) => (historyMode ? point.average : point.current)).filter(Number.isFinite);
-    const minDb = 30;
+    const minDb = 0;
     const maxDb = Math.max(
-      100,
-      Math.ceil((Math.max(threshold + 15, ...peakValues, 85) + 5) / 10) * 10,
+      80,
+      Math.ceil((Math.max(threshold + 15, ...peakValues, 85) + 5) / 20) * 20,
     );
     const x = (point) =>
       historyMode
@@ -796,7 +796,7 @@
     ctx.lineWidth = 1;
 
     const gridStep = maxDb > 120 ? 20 : 20;
-    for (let value = 40; value <= maxDb; value += gridStep) {
+    for (let value = 0; value <= maxDb; value += gridStep) {
       const lineY = Math.round(y(value)) + 0.5;
       ctx.beginPath();
       ctx.moveTo(padLeft, lineY);

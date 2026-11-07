@@ -5,7 +5,7 @@
 !define APPNAME "声垣服务端"
 !define APPNAME_EN "SoundGuard Server"
 !define COMPANY "Cheerimy Studio"
-!define VERSION "0.2.3"
+!define VERSION "0.2.4"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\SoundGuardServer"
 
 Name "${APPNAME}"

@@ -84,16 +84,14 @@ pub fn render_svg(
     let plot_w = width - left - right;
     let plot_h = height - top - bottom;
 
-    let mut min_y = 30.0_f64;
-    let mut max_y = 100.0_f64;
-    if let (Some(min), Some(max)) = (stats.min_db, stats.peak_db) {
-        min_y = (min - 5.0).floor().max(20.0);
-        max_y = (max + 5.0).ceil().min(140.0);
+    let min_y = 0.0_f64;
+    let mut max_y = 80.0_f64;
+    if let Some(max) = stats.peak_db {
+        max_y = (max + 5.0).ceil().min(160.0);
     }
-    max_y = max_y.max(threshold_db + 5.0);
-    if max_y - min_y < 20.0 {
-        max_y = min_y + 20.0;
-    }
+    max_y = max_y.max(threshold_db + 5.0).max(80.0);
+    let step_count = ((max_y / 20.0).ceil() as usize).max(4);
+    let max_y = step_count as f64 * 20.0;
     let y_for = |db: f64| -> f64 {
         let ratio = ((db - min_y) / (max_y - min_y)).clamp(0.0, 1.0);
         top + plot_h * (1.0 - ratio)
@@ -128,8 +126,8 @@ pub fn render_svg(
         threshold = threshold_db,
     );
 
-    for step in 0..=5 {
-        let value = min_y + (max_y - min_y) * (step as f64 / 5.0);
+    for step in 0..=step_count {
+        let value = step as f64 * 20.0;
         let y = y_for(value);
         let _ = write!(
             svg,
