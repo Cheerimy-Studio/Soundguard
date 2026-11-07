@@ -181,6 +181,7 @@ pub fn build_router(state: AppState) -> Router {
             get(device_totp_secret).post(device_totp_verify),
         )
         .route("/device/war-mode", get(get_war_mode))
+        .route("/device/war-mode/leaderboard", get(device_war_leaderboard))
         .route("/war-mode/leaderboard", get(war_leaderboard))
         .route("/update/check", get(check_update))
         .route("/update/apply", post(apply_update))
@@ -2784,6 +2785,45 @@ async fn get_war_mode(
         "start": settings.war_mode_start,
         "end": settings.war_mode_end,
     })))
+}
+
+/// Device-token-authenticated war leaderboard: all online+monitoring devices
+/// sorted by average dB descending. War mode is a global feature, so no
+/// per-device access filter is needed.
+async fn device_war_leaderboard(
+    _credential: DeviceAuth,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let snapshot = state.store.snapshot().await;
+    let mut devices: Vec<_> = snapshot
+        .devices
+        .iter()
+        .filter(|d| {
+            d.live_avg_db.is_some()
+                && d.monitoring
+                && d.is_online(
+                    Utc::now(),
+                    crate::models::effective_settings(&snapshot.settings, d).offline_timeout_secs,
+                )
+        })
+        .map(|d| {
+            let offline =
+                crate::models::effective_settings(&snapshot.settings, d).offline_timeout_secs;
+            json!({
+                "id": d.id,
+                "name": d.name,
+                "avgDb": d.live_avg_db,
+                "peakDb": d.peak_db,
+                "online": d.is_online(Utc::now(), offline),
+            })
+        })
+        .collect();
+    devices.sort_by(|a, b| {
+        let a_db = a.get("avgDb").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+        let b_db = b.get("avgDb").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+        b_db.partial_cmp(&a_db).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Ok(Json(json!({ "leaderboard": devices })))
 }
 
 /// Admin endpoint: war mode leaderboard sorted by average dB.

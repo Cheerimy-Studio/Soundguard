@@ -989,6 +989,52 @@ impl SoundGuardApp {
             }
         });
         ui.add_space(10.0);
+        if self.status.policy.war() && !self.status.war_ranks.is_empty() {
+            card().show(ui, |ui| {
+                ui.set_width(324.0);
+                ui.horizontal(|ui| {
+                    section_heading(ui, Icon::Calls, "分贝战争排名");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        pill(ui, "30 秒滑动", GOLD, C::from_rgb(253, 247, 230));
+                    });
+                });
+                ui.add_space(10.0);
+                for (index, rank) in self.status.war_ranks.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        let medal = if index == 0 {
+                            "🥇"
+                        } else if index == 1 {
+                            "🥈"
+                        } else if index == 2 {
+                            "🥉"
+                        } else {
+                            &format!("  {}", index + 1)
+                        };
+                        ui.label(R::new(medal).size(12.0));
+                        ui.label(
+                            R::new(&rank.name)
+                                .size(12.0)
+                                .color(if rank.online { TEXT } else { MUTED }),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                R::new(format!(
+                                    "{:.1} dB",
+                                    rank.avg_db.unwrap_or(0.0)
+                                ))
+                                .size(13.0)
+                                .strong()
+                                .color(GOLD),
+                            );
+                        });
+                    });
+                    if index < self.status.war_ranks.len() - 1 {
+                        ui.separator();
+                    }
+                }
+            });
+            ui.add_space(10.0);
+        }
         card().show(ui, |ui| {
             ui.set_width(324.0);
             ui.horizontal(|ui| {

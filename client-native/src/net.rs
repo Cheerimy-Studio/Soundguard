@@ -88,6 +88,17 @@ pub struct CallRecord {
     pub duration_secs: u32,
     pub has_audio: bool,
 }
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+pub struct WarRankEntry {
+    pub id: String,
+    pub name: String,
+    pub avg_db: Option<f64>,
+    pub peak_db: Option<f64>,
+    pub online: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct NetState {
     pub connected: bool,
@@ -104,6 +115,7 @@ pub struct NetState {
     pub records: Vec<CallRecord>,
     pub auth_result: Option<(u64, bool, String)>,
     pub playback: Option<crate::playback::PlaybackStatus>,
+    pub war_ranks: Vec<WarRankEntry>,
     pub exit_ready: bool,
 }
 impl Default for NetState {
@@ -123,6 +135,7 @@ impl Default for NetState {
             records: Vec::new(),
             auth_result: None,
             playback: None,
+            war_ranks: Vec::new(),
             exit_ready: false,
         }
     }
@@ -278,12 +291,14 @@ async fn run(
     let mut reconnect = tokio::time::interval(Duration::from_secs(3));
     let mut records_tick = tokio::time::interval(Duration::from_secs(30));
     let mut playback_tick = tokio::time::interval(Duration::from_millis(200));
+    let mut war_tick = tokio::time::interval(Duration::from_secs(15));
     for t in [
         &mut heartbeat,
         &mut meter,
         &mut reconnect,
         &mut records_tick,
         &mut playback_tick,
+        &mut war_tick,
     ] {
         t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     }
@@ -362,6 +377,14 @@ async fn run(
            state.lock().unwrap().pending_reports=reports.len();
          }
          _=playback_tick.tick()=>{let next=player.as_ref().map(|p|p.status()).filter(|s|s.loaded);state.lock().unwrap().playback=next;}
+         _=war_tick.tick()=>{
+           if state.lock().unwrap().connected && policy.war(){
+             match request::<Value>(&http,&c,"/api/device/war-mode/leaderboard",None).await{
+               Ok(v)=>{if let Some(list)=v["leaderboard"].as_array(){state.lock().unwrap().war_ranks=serde_json::from_value(json!(list)).unwrap_or_default();}}
+               _=>{}
+             }
+           } else { state.lock().unwrap().war_ranks.clear(); }
+         }
          _=records_tick.tick()=>{if state.lock().unwrap().connected{if let Ok(v)=request::<Vec<CallRecord>>(&http,&c,&format!("/api/device/calls?deviceId={}&limit=5",c.device_id),None).await{state.lock().unwrap().records=v;}}}
          _=reconnect.tick(),if socket.is_none()=>{if !state.lock().unwrap().connected{continue;}if let Ok(url)=ws_url(&c){let result=tokio::select!{_=stop.changed()=>break,r=tokio::time::timeout(Duration::from_secs(4),connect_async(url))=>r};if let Ok(Ok((ws,_)))=result{socket=Some(ws);state.lock().unwrap().signaling=true;}}}
          Some(value)=outbound.recv()=>{

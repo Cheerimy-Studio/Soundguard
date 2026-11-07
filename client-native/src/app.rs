@@ -178,6 +178,13 @@ impl SoundGuardApp {
                         app.display_db = Some(74.6);
                         app.current_db = Some(74.6);
                     }
+                    "ranks" => {
+                        app.status.war_ranks = vec![
+                            crate::net::WarRankEntry { id: "a".into(), name: "教学楼 A".into(), avg_db: Some(72.3), peak_db: Some(80.1), online: true },
+                            crate::net::WarRankEntry { id: "b".into(), name: "教学楼 B".into(), avg_db: Some(68.5), peak_db: Some(75.0), online: true },
+                            crate::net::WarRankEntry { id: "c".into(), name: "操场".into(), avg_db: Some(63.2), peak_db: Some(70.5), online: true },
+                        ];
+                    }
                     _ => {}
                 }
             }
