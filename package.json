@@ -1,6 +1,6 @@
 {
   "name": "soundguard",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "private": true,
   "description": "SoundGuard · Rust/egui decibel monitoring and remote intercom system",
   "scripts": {

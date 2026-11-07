@@ -1,6 +1,6 @@
 [package]
 name = "soundguard-server"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2021"
 description = "SoundGuard decibel monitoring backend"
 license = "MIT"

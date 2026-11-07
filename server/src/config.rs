@@ -7,7 +7,7 @@ use std::{
 use serde_json::{json, Value};
 use tracing::warn;
 
-use crate::models::Settings;
+use crate::models::{default_ice_servers, Settings};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SmtpTls {
@@ -314,8 +314,11 @@ impl Config {
             .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
             .unwrap_or_else(|| {
                 json!([
+                    { "urls": "stun:stun.qq.com:3478" },
+                    { "urls": "stun:stun.miwifi.com:3478" },
+                    { "urls": "stun:stun.chat.bilibili.com:3478" },
                     { "urls": "stun:stun.l.google.com:19302" },
-                    { "urls": "stun:stun1.l.google.com:19302" }
+                    { "urls": "stun:stun.cloudflare.com:3478" }
                 ])
             });
 
@@ -387,6 +390,7 @@ impl Config {
                 .map(|value| value.min(u32::MAX as u64) as u32),
         };
         let mut default_settings = Settings {
+            ice_servers: default_ice_servers(),
             threshold_db: parse_f64("THRESHOLD_DB", 65.0),
             alert_recipients,
             report_recipients,
@@ -502,6 +506,7 @@ mod tests {
 
     fn sample_settings() -> Settings {
         Settings {
+            ice_servers: default_ice_servers(),
             threshold_db: 65.0,
             alert_recipients: vec!["saved@example.com".to_string()],
             report_recipients: vec!["report@example.com".to_string()],

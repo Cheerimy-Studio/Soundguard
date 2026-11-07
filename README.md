@@ -94,10 +94,10 @@
 
 ### WebRTC 说明
 
-音视频媒体本身是管理端浏览器与原生采集端之间的 **P2P WebRTC**，服务端只转发 SDP 与 ICE 信令，不转发媒体流。默认使用 Google STUN；跨公网或对称 NAT 环境请在 `.env` 的 `ICE_SERVERS` 中加入 TURN 服务器：
+音视频媒体本身是管理端浏览器与原生采集端之间的 **P2P WebRTC**，服务端只转发 SDP 与 ICE 信令，不转发媒体流。默认使用国内 STUN（腾讯/小米/Bilibili）+ 国际回退（Google/Cloudflare），也可在管理端设置页修改；跨公网或对称 NAT 环境请在 `.env` 的 `ICE_SERVERS` 中加入 TURN 服务器：
 
 ```env
-ICE_SERVERS=[{"urls":"stun:stun.l.google.com:19302"},{"urls":"turn:turn.example.com:3478","username":"user","credential":"secret"}]
+ICE_SERVERS=[{"urls":"stun:stun.qq.com:3478"},{"urls":"stun:stun.miwifi.com:3478"},{"urls":"stun:stun.l.google.com:19302"},{"urls":"turn:turn.example.com:3478","username":"user","credential":"secret"}]
 ```
 
 管理端页面若通过局域网 IP 用 HTTP 打开，浏览器会禁止 `getUserMedia`。对讲功能要求在 `localhost` 或 HTTPS 下访问管理端。
@@ -241,7 +241,7 @@ npm run build:client:win7
 
 脚本会调用 `scripts/build-win7.ps1`，使用 `client-native/win7-libs` 中的 Windows 导入库，
 并把 `combase.dll` 导入重定向到 `ole32.dll`，产物为 `dist\soundguard-client-win7.exe`。
-Win7 安装包为 `dist\soundguard-client-win7-setup-0.2.4.exe`，支持开机自启。
+Win7 安装包为 `dist\soundguard-client-win7-setup-0.2.5.exe`，支持开机自启。
 
 ### 4.6 安卓 App
 
@@ -336,7 +336,7 @@ docker compose up -d --build
 | `AUTO_RECORD_EVIDENCE` | `true` | 超限自动录音 |
 | `RETENTION_DAYS` | `30` | 遥测、告警、通话记录和邮件预览保留天数；无引用音频自动清理 |
 | `SMTP_HOST/PORT/USER/PASS/FROM` | 空 | SMTP 配置 |
-| `ICE_SERVERS` | Google STUN | WebRTC ICE 服务器 JSON |
+| `ICE_SERVERS` | 腾讯/小米/Bilibili/Google/Cloudflare STUN | WebRTC ICE 服务器 JSON |
 | `CORS_ORIGINS` | 空 | 允许的管理端来源，逗号分隔；空时支持同源访问及内置安卓 App。安卓 App 来源为 `https://appassets.androidplatform.net` |
 | `TLS_CERT` / `TLS_KEY` | 空 | 同时配置时服务端直接提供 HTTPS/WSS；否则建议在 Nginx/Caddy 终止 TLS |
 | `MEDIA_KEY_FILE` | `data/media-key` | 音频加密密钥路径；生产建议放在 data 目录和备份卷之外 |

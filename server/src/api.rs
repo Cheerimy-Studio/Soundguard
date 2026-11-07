@@ -761,7 +761,7 @@ async fn update_notifications(
     Ok(Json(SettingsResponse {
         settings: public_settings(saved),
         smtp_configured: state.mailer.configured(),
-        ice_servers: state.config.ice_servers.clone(),
+        ice_servers: settings.ice_servers.clone(),
     }))
 }
 
@@ -1148,6 +1148,7 @@ async fn overview(
     }
     settings.fixed_password_hash.clear();
     let view = device.view(now, settings.offline_timeout_secs);
+    let ice = settings.ice_servers.clone();
     Ok(Json(OverviewResponse {
         devices: device_views(&snapshot, now, &admin.user),
         device: view,
@@ -1158,7 +1159,7 @@ async fn overview(
         smtp_configured: state.mailer.configured(),
         server_time: now,
         server_utc_offset_secs: Local::now().offset().local_minus_utc(),
-        ice_servers: state.config.ice_servers.clone(),
+        ice_servers: ice,
         signaling_connected: state.hub.device_connected(&device.id).await,
     }))
 }
@@ -1510,9 +1511,9 @@ async fn get_settings(
     admin.require_update_admin()?;
     let snapshot = state.store.snapshot().await;
     Ok(Json(SettingsResponse {
-        settings: public_settings(snapshot.settings),
+        settings: public_settings(snapshot.settings.clone()),
         smtp_configured: state.mailer.configured(),
-        ice_servers: state.config.ice_servers.clone(),
+        ice_servers: snapshot.settings.ice_servers.clone(),
     }))
 }
 
@@ -1548,6 +1549,7 @@ async fn update_settings(
     settings
         .validate_and_normalize()
         .map_err(AppError::bad_request)?;
+    let ice = settings.ice_servers.clone();
     let saved = state
         .store
         .mutate(|state| {
@@ -1562,7 +1564,7 @@ async fn update_settings(
     Ok(Json(SettingsResponse {
         settings: public_settings(saved),
         smtp_configured: state.mailer.configured(),
-        ice_servers: state.config.ice_servers.clone(),
+        ice_servers: ice,
     }))
 }
 
@@ -1589,10 +1591,11 @@ async fn update_fixed_password(
         "settings",
         serde_json::to_value(public_settings(saved.clone())).unwrap_or_default(),
     );
+    let ice = saved.ice_servers.clone();
     Ok(Json(SettingsResponse {
         settings: public_settings(saved),
         smtp_configured: state.mailer.configured(),
-        ice_servers: state.config.ice_servers.clone(),
+        ice_servers: ice,
     }))
 }
 
@@ -2085,7 +2088,7 @@ async fn device_heartbeat(
         auto_record_evidence: settings.auto_record_evidence,
         server_time: now,
         server_utc_offset_secs: Local::now().offset().local_minus_utc(),
-        ice_servers: state.config.ice_servers.clone(),
+        ice_servers: settings.ice_servers.clone(),
         device_id: device.id,
         device_name: device.name,
         notification_enabled: settings.notification_enabled,

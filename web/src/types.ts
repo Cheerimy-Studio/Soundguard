@@ -83,6 +83,7 @@ export interface Settings {
   notificationEnabled: boolean;
   notificationTitle: string;
   notificationContent: string;
+  iceServers: unknown[];
 }
 
 export interface Stats {

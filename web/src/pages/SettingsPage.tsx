@@ -7,6 +7,7 @@ import {
   BellRing,
   CheckCircle2,
   Clock3,
+  Globe,
   Database,
   KeyRound,
   LoaderCircle,
@@ -104,6 +105,7 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
     policyFromDevice(overview.settings, overview.devices.find((d) => d.id === (deviceId || overview.device.id))?.settings),
   );
   const [policySaving, setPolicySaving] = useState(false);
+  const [stunPreset, setStunPreset] = useState("domestic");
   const policyEditing=useRef(false);
   const policyBound=useRef(policyDeviceId);
   const [nvidiaConfigured, setNvidiaConfigured] = useState<boolean | null>(null);
@@ -390,6 +392,7 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
         <a href="#device-policy">设备策略</a>
         {canConfigure && <a href="#war-policy">分贝战争</a>}
         {isSuper && <a href="#schedule-policy">计划任务</a>}
+        {canConfigure && <a href="#stun-policy">STUN 服务器</a>}
         {isSuper && <a href="#password-policy">操作保护</a>}
         <span>{canConfigure ? "全局策略对所有客户端生效" : "仅可修改已分配设备的独立策略"}</span>
       </nav>
@@ -1052,6 +1055,69 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
               </label>
             </div>
             <div className="inline-note">每日重复，可跨午夜。只填自动开启：从该时间起保持采集；只填自动关闭：每日 00:00 起采集，到该时间停止；两个相同表示全天。手动暂停优先，客户端约 10 秒内同步。</div>
+          </section>)}
+
+          {canConfigure && (<section id="stun-policy" className="panel settings-card">
+            <div className="settings-card-head">
+              <div className="settings-icon cyan"><Globe size={18} /></div>
+              <div>
+                <h3>STUN 服务器</h3>
+                <p>WebRTC 对讲使用。国内默认腾讯 STUN；连接失败时 WebRTC 自动尝试列表中的其他服务器。</p>
+              </div>
+            </div>
+            <div className="field-grid">
+              <label className="form-field">
+                <span>预设</span>
+                <select
+                  value={stunPreset}
+                  onChange={(event) => {
+                    const preset = event.target.value;
+                    setStunPreset(preset);
+                    if (preset === "domestic") {
+                      update("iceServers", [
+                        { urls: "stun:stun.qq.com:3478" },
+                        { urls: "stun:stun.miwifi.com:3478" },
+                        { urls: "stun:stun.chat.bilibili.com:3478" },
+                        { urls: "stun:stun.l.google.com:19302" },
+                        { urls: "stun:stun.cloudflare.com:3478" },
+                      ]);
+                    } else if (preset === "international") {
+                      update("iceServers", [
+                        { urls: "stun:stun.l.google.com:19302" },
+                        { urls: "stun:stun.cloudflare.com:3478" },
+                        { urls: "stun:stun.nextcloud.com:443" },
+                      ]);
+                    } else if (preset === "all") {
+                      update("iceServers", [
+                        { urls: "stun:stun.qq.com:3478" },
+                        { urls: "stun:stun.miwifi.com:3478" },
+                        { urls: "stun:stun.chat.bilibili.com:3478" },
+                        { urls: "stun:stun.l.google.com:19302" },
+                        { urls: "stun:stun.cloudflare.com:3478" },
+                        { urls: "stun:stun.nextcloud.com:443" },
+                      ]);
+                    }
+                  }}
+                >
+                  <option value="domestic">国内（默认 · 腾讯/小米/Bilibili + 国际回退）</option>
+                  <option value="international">国际（Google/Cloudflare/Nextcloud）</option>
+                  <option value="all">全部（国内 + 国际）</option>
+                  <option value="custom">自定义</option>
+                </select>
+              </label>
+            </div>
+            <label className="form-field">
+              <span>ICE 服务器 JSON</span>
+              <textarea
+                rows={4}
+                value={JSON.stringify(form.iceServers, null, 2)}
+                onChange={(event) => {
+                  setStunPreset("custom");
+                  try { update("iceServers", JSON.parse(event.target.value)); } catch { /* keep old */ }
+                }}
+              />
+              <small>格式：[{"{"}"urls":"stun:host:port"{"}"}]；WebRTC 会并行尝试所有服务器。</small>
+            </label>
           </section>)}
 
           {isSuper && (<section id="password-policy" className="panel settings-card">

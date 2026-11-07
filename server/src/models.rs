@@ -48,6 +48,19 @@ pub struct Settings {
     pub capture_start: String,
     #[serde(default)]
     pub capture_end: String,
+    /// WebRTC ICE/STUN 服务器列表（JSON 数组）。
+    #[serde(default = "default_ice_servers")]
+    pub ice_servers: Value,
+}
+
+pub fn default_ice_servers() -> Value {
+    serde_json::json!([
+        { "urls": "stun:stun.qq.com:3478" },
+        { "urls": "stun:stun.miwifi.com:3478" },
+        { "urls": "stun:stun.chat.bilibili.com:3478" },
+        { "urls": "stun:stun.l.google.com:19302" },
+        { "urls": "stun:stun.cloudflare.com:3478" }
+    ])
 }
 
 fn default_denoise_mode() -> String {
@@ -173,6 +186,15 @@ impl Settings {
         }
         if !matches!(self.denoise_mode.as_str(), "off" | "light" | "standard") {
             return Err("降噪模式必须为 off / light / standard".to_string());
+        }
+        if let Some(list) = self.ice_servers.as_array() {
+            for server in list {
+                if server.get("urls").and_then(Value::as_str).is_none() {
+                    return Err("ICE 服务器列表格式无效，需要 urls 字段".to_string());
+                }
+            }
+        } else {
+            self.ice_servers = default_ice_servers();
         }
         self.notification_title = self.notification_title.trim().chars().take(80).collect();
         self.notification_content = self
