@@ -674,7 +674,6 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
                   <option value="off">关闭 · 原始声压测量</option>
                   <option value="light">轻度 · 保留更多环境细节</option>
                   <option value="standard">标准 · 推荐常驻噪声场所</option>
-                  <option value="strong">强化 · 噪声门限随语音活动加深</option>
                 </select>
                 <small>所有采集端在下一次心跳时自动应用（约 10 秒）。</small>
               </label>

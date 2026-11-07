@@ -70,8 +70,15 @@ fn setup_style(ctx: &egui::Context) {
     style.visuals.widgets.hovered.bg_stroke =
         egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(188, 213, 215));
     style.visuals.widgets.inactive.fg_stroke =
-        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(23, 32, 51));
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(128, 143, 162));
+    style.visuals.widgets.hovered.fg_stroke =
+        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(73, 91, 113));
     style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+    style.spacing.scroll.floating = false;
+    style.spacing.scroll.foreground_color = true;
+    style.spacing.scroll.bar_width = 6.0;
+    style.spacing.scroll.bar_inner_margin = 3.0;
+    style.spacing.scroll.bar_outer_margin = 3.0;
     style.spacing.button_padding = egui::vec2(12.0, 8.0);
     style.spacing.interact_size.y = 32.0;
     style

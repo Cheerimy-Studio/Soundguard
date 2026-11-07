@@ -158,6 +158,8 @@ try {
   assert.equal(startOnly.settings.captureStart,'07:00'); assert.equal(startOnly.settings.captureEnd,''); checks++;
   const endOnly=(await req('/settings',{...auth,method:'PUT',body:{...globalSettings,captureStart:'',captureEnd:'19:00'}})).body;
   assert.equal(endOnly.settings.captureStart,''); assert.equal(endOnly.settings.captureEnd,'19:00'); checks++;
+  const denoiseMigration=(await req('/settings',{...auth,method:'PUT',body:{...globalSettings,denoiseMode:'strong'}})).body;
+  assert.equal(denoiseMigration.settings.denoiseMode,'standard'); checks++;
   await req('/settings',{...auth,method:'PUT',body:globalSettings});
   const managerDeviceSchedule=(await req('/devices/room-a/settings',{...managerAuth,method:'PUT',body:{captureStart:'08:00',captureEnd:'09:30'}})).body;
   assert.equal(managerDeviceSchedule.settings.captureStart,'08:00'); assert.equal(managerDeviceSchedule.settings.captureEnd,'09:30'); checks++;

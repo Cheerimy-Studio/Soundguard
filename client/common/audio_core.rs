@@ -14,7 +14,6 @@ const SYSTEM_PLAYBACK_THRESHOLD: f32 = 0.0045;
 pub const DENOISE_OFF: u8 = 0;
 pub const DENOISE_LIGHT: u8 = 1;
 pub const DENOISE_STANDARD: u8 = 2;
-pub const DENOISE_STRONG: u8 = 3;
 
 /// Streaming denoise engine injected at startup. The RNNoise AI engine lives
 /// in `rnnoise_engine.rs` (it needs the nnnoiseless crate); audio_core stays
@@ -273,7 +272,7 @@ impl AudioShared {
     /// restarts the 30 s measurement window so levels never mix pre/post
     /// configurations, and the evidence ring only holds one configuration.
     pub fn set_denoise(&self, mode: u8, voice_enhance: bool) {
-        let mode = mode.min(DENOISE_STRONG);
+        let mode = mode.min(DENOISE_STANDARD);
         let mode_changed = self.denoise_mode.swap(mode, Ordering::SeqCst) != mode;
         let voice_changed = self.voice_enhance.swap(voice_enhance, Ordering::SeqCst) != voice_enhance;
         let changed = mode_changed || voice_changed;
@@ -694,8 +693,8 @@ mod tests {
     #[test]
     fn simultaneous_denoise_and_voice_changes_are_applied() {
         let shared=AudioShared::new(90.0);
-        shared.set_denoise(DENOISE_STRONG,true);
-        assert_eq!(shared.denoise_mode.load(Ordering::SeqCst),DENOISE_STRONG);
+        shared.set_denoise(DENOISE_STANDARD,true);
+        assert_eq!(shared.denoise_mode.load(Ordering::SeqCst),DENOISE_STANDARD);
         assert!(shared.voice_enhance.load(Ordering::SeqCst));
     }
     #[test]

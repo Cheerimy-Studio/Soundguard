@@ -608,26 +608,38 @@ impl SoundGuardApp {
                 if self.auth.is_some() || self.settings_open || self.exiting {
                     ui.disable();
                 }
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    let width = ui.available_width();
-                    let left = (width - 376.0).max(420.0);
-                    ui.horizontal_top(|ui| {
-                        ui.spacing_mut().item_spacing.x = 16.0;
-                        ui.allocate_ui_with_layout(
-                            vec2(left, 600.0),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| {
-                                ui.set_width(left);
-                                ui.spacing_mut().item_spacing.x = 8.0;
-                                self.monitor(ui, accent);
-                            },
-                        );
-                        ui.vertical(|ui| {
-                            ui.set_width(360.0);
-                            self.sidebar(ui);
+                egui::ScrollArea::vertical()
+                    .id_source("dashboard-scroll")
+                    .max_height(ui.available_height())
+                    .scroll_bar_visibility(
+                        egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
+                    )
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let width = ui.available_width();
+                        let left = (width - 376.0).max(420.0);
+                        let content_height = 1400.0_f32.max(ui.available_height());
+                        ui.horizontal_top(|ui| {
+                            ui.spacing_mut().item_spacing.x = 16.0;
+                            ui.allocate_ui_with_layout(
+                                vec2(left, content_height),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    ui.set_width(left);
+                                    ui.spacing_mut().item_spacing.x = 8.0;
+                                    self.monitor(ui, accent);
+                                },
+                            );
+                            ui.allocate_ui_with_layout(
+                                vec2(360.0, content_height),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    ui.set_width(360.0);
+                                    self.sidebar(ui);
+                                },
+                            );
                         });
                     });
-                });
             });
     }
     fn monitor(&mut self, ui: &mut egui::Ui, accent: C) {

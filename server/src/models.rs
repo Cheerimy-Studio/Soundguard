@@ -27,7 +27,7 @@ pub struct Settings {
     pub notification_title: String,
     #[serde(default)]
     pub notification_content: String,
-    /// AI 降噪模式：off / light / standard / strong（RNNoise）。
+    /// AI 降噪模式：off / light / standard（RNNoise）。
     #[serde(default = "default_denoise_mode")]
     pub denoise_mode: String,
     /// 人声增强：降噪后对语音频段做临场感提升。
@@ -167,11 +167,12 @@ impl Settings {
         {
             return Err("开启分贝战争时请填写完整时段".into());
         }
-        if !matches!(
-            self.denoise_mode.as_str(),
-            "off" | "light" | "standard" | "strong"
-        ) {
-            return Err("降噪模式必须为 off / light / standard / strong".to_string());
+        if self.denoise_mode == "strong" {
+            // The former VAD-weighted gate is retired; keep the full RNNoise output.
+            self.denoise_mode = "standard".to_string();
+        }
+        if !matches!(self.denoise_mode.as_str(), "off" | "light" | "standard") {
+            return Err("降噪模式必须为 off / light / standard".to_string());
         }
         self.notification_title = self.notification_title.trim().chars().take(80).collect();
         self.notification_content = self

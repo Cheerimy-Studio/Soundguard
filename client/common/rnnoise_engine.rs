@@ -5,8 +5,6 @@
 //! - `off`      bypass (engine not even scheduled by audio_core)
 //! - `light`    55 % wet blend — gentle cleanup, minimal colouration
 //! - `standard` full RNNoise output
-//! - `strong`   full RNNoise plus a VAD-keyed gate that ducks non-speech
-//!              segments by up to 10 dB (smoothed, never fully mutes)
 //!
 //! `voice_enhance` adds a +2.5 dB presence lift around 2.3 kHz and a slight
 //! 5 kHz shelf so speech stays intelligible after denoising.
@@ -67,7 +65,6 @@ pub struct RnnoiseEngine {
     voice: bool,
     frame_buf: Vec<f32>,
     out_queue: VecDeque<f32>,
-    vad_smooth: f32,
     presence: PeakingEq,
     air: PeakingEq,
 }
@@ -80,7 +77,6 @@ impl RnnoiseEngine {
             voice,
             frame_buf: Vec::with_capacity(FRAME),
             out_queue: VecDeque::with_capacity(FRAME * 4),
-            vad_smooth: 0.0,
             presence: PeakingEq::new(48_000.0, 2_300.0, 0.9, 2.5),
             air: PeakingEq::new(48_000.0, 5_200.0, 0.7, 1.5),
         }
@@ -90,31 +86,23 @@ impl RnnoiseEngine {
         self.state = DenoiseState::new();
         self.frame_buf.clear();
         self.out_queue.clear();
-        self.vad_smooth = 0.0;
         self.presence = PeakingEq::new(48_000.0, 2_300.0, 0.9, 2.5);
         self.air = PeakingEq::new(48_000.0, 5_200.0, 0.7, 1.5);
     }
 
     fn process_frame(&mut self) {
         let mut wet = [0.0f32; FRAME];
-        let vad = self
-            .state
+        self.state
             .process_frame(&mut wet, &self.frame_buf[..]);
         // RNNoise output is already in the 16-bit scale; return to [-1, 1].
         for sample in wet.iter_mut() {
             *sample *= SCALE_OUT;
         }
 
-        self.vad_smooth = vad.max(self.vad_smooth * 0.93);
         let dry: [f32; FRAME] = std::array::from_fn(|i| self.frame_buf[i] * SCALE_OUT);
         let mixed: [f32; FRAME] = std::array::from_fn(|i| match self.mode {
             crate::audio::DENOISE_OFF => dry[i],
             crate::audio::DENOISE_LIGHT => 0.55 * wet[i] + 0.45 * dry[i],
-            crate::audio::DENOISE_STRONG => {
-                // Duck sustained non-speech segments without ever muting.
-                let gate = 1.0 - 0.7 * ((0.15 - self.vad_smooth) / 0.15).clamp(0.0, 1.0);
-                wet[i] * gate
-            }
             // Standard and any unknown value use the full AI output.
             _ => wet[i],
         });
@@ -148,7 +136,7 @@ impl DenoiseEngine for RnnoiseEngine {
     }
 
     fn set_config(&mut self, mode: u8, voice_enhance: bool) {
-        let mode = mode.min(crate::audio::DENOISE_STRONG);
+        let mode = mode.min(crate::audio::DENOISE_STANDARD);
         if mode != self.mode || voice_enhance != self.voice {
             self.mode = mode;
             self.voice = voice_enhance;
@@ -220,24 +208,6 @@ mod tests {
             drop_db >= 8.0,
             "expected ≥8 dB suppression on stationary noise, got {drop_db:.2} dB"
         );
-    }
-
-    #[test]
-    fn strong_mode_suppresses_noise_and_stays_finite() {
-        let mut rng = Rng(0x1234567890ABCDEF);
-        let mut engine = RnnoiseEngine::new(crate::audio::DENOISE_STRONG, true);
-        let noisy: Vec<f32> = (0..FRAME * 40).map(|_| rng.next()).collect();
-        let mut out = Vec::new();
-        engine.process(&noisy, &mut out);
-        assert_eq!(out.len(), noisy.len());
-        assert!(out.iter().all(|s| s.is_finite()));
-        let out_rms = rms(&out[FRAME..]) as f64;
-        let in_rms = rms(&noisy[FRAME..]) as f64;
-        // Pure stationary noise is the easiest case: heavy suppression is the
-        // feature. Just guard that it is not bit-exact silence and that the
-        // level did go down.
-        assert!(out_rms > 0.0);
-        assert!(db(in_rms / out_rms.max(1e-9)) >= 8.0);
     }
 
     #[test]

@@ -241,7 +241,7 @@ npm run build:client:win7
 
 脚本会调用 `scripts/build-win7.ps1`，使用 `client-native/win7-libs` 中的 Windows 导入库，
 并把 `combase.dll` 导入重定向到 `ole32.dll`，产物为 `dist\soundguard-client-win7.exe`。
-Win7 安装包为 `dist\soundguard-client-win7-setup-0.2.2.exe`，支持开机自启。
+Win7 安装包为 `dist\soundguard-client-win7-setup-0.2.3.exe`，支持开机自启。
 
 ### 4.6 安卓 App
 
@@ -331,7 +331,7 @@ docker compose up -d --build
 | `OFFLINE_TIMEOUT_SECS` | `45` | 离线判定秒数（客户端 10 秒心跳） |
 | `ALERT_COOLDOWN_SECS` | `300` | 持续超限时邮件冷却 |
 | `EVIDENCE_SECONDS` | `30` | 固定值；证据录音始终覆盖完整 30 秒平均窗口，该项不会被覆盖 |
-| `DENOISE_MODE` | `off` | RNNoise AI 降噪：`off` / `light` / `standard` / `strong`；也可在管理端设置页修改 |
+| `DENOISE_MODE` | `off` | RNNoise AI 降噪：`off` / `light` / `standard`；也可在管理端设置页修改 |
 | `VOICE_ENHANCE` | `false` | 降噪后的语音临场感提升（2–5 kHz），影响分贝测量与证据录音 |
 | `AUTO_RECORD_EVIDENCE` | `true` | 超限自动录音 |
 | `RETENTION_DAYS` | `30` | 遥测、告警、通话记录和邮件预览保留天数；无引用音频自动清理 |

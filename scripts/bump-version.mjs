@@ -64,6 +64,11 @@ replaceOnce("deploy/windows/client.nsi", /VIProductVersion "[^"]+"/, `VIProductV
 replaceOnce("deploy/windows/client.nsi", /VIAddVersionKey "FileVersion" "[^"]+"/, `VIAddVersionKey "FileVersion" "${next}"`, "client.nsi FileVersion");
 replaceOnce("deploy/windows/client.nsi", /VIAddVersionKey "ProductVersion" "[^"]+"/, `VIAddVersionKey "ProductVersion" "${next}"`, "client.nsi ProductVersion");
 replaceOnce("deploy/windows/server.nsi", /!define VERSION "[^"]+"/, `!define VERSION "${next}"`, "server.nsi VERSION");
+replaceOnce("deploy/windows/client-native-win7.nsi", /!define VERSION "[^"]+"/, `!define VERSION "${next}"`, "client-native-win7.nsi VERSION");
+replaceOnce("deploy/windows/client-native-win7.nsi", /VIProductVersion "[^"]+"/, `VIProductVersion "${next}.0"`, "client-native-win7.nsi VIProductVersion");
+replaceOnce("deploy/windows/client-native-win7.nsi", /VIAddVersionKey "FileVersion" "[^"]+"/, `VIAddVersionKey "FileVersion" "${next}"`, "client-native-win7.nsi FileVersion");
+replaceOnce("deploy/windows/client-native-win7.nsi", /VIAddVersionKey "ProductVersion" "[^"]+"/, `VIAddVersionKey "ProductVersion" "${next}"`, "client-native-win7.nsi ProductVersion");
+
 
 console.log(`版本号已更新：${current} → ${next}`);
 console.log("请重新构建 Web、服务端、客户端、安装包与 APK。");
