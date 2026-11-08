@@ -577,20 +577,6 @@
     if (!Number.isFinite(a) && Number.isFinite(b)) return minute<b;
     return a===b || (a<b ? minute>=a && minute<b : minute>=a || minute<b);
   }
-  // The native collector answers with PCMU/8000. Force the same codec here so
-  // Chrome does not keep Opus on the sending side of an asymmetric negotiation.
-  function preferPcmu(pc) {
-    try {
-      const transceiver = pc.getTransceivers().find((item) => item.sender?.track?.kind === "audio");
-      const codecs = (window.RTCRtpSender && RTCRtpSender.getCapabilities)
-        ? RTCRtpSender.getCapabilities("audio")?.codecs || []
-        : [];
-      const pcmu = codecs.filter((codec) => /PCMU\/8000/i.test(codec.mimeType || ""));
-      if (transceiver && pcmu.length) transceiver.setCodecPreferences(pcmu);
-    } catch (error) {
-      console.warn("codec preference failed", error);
-    }
-  }
   function currentPolicy() {
     const settings=state.settings || {};
     const now = (Date.parse(state.overview?.serverTime) || Date.now()) + (Date.now()-state.overviewSyncedAt)
@@ -1596,7 +1582,6 @@
       const pc = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 4 });
       call.pc = pc;
       call.local.getTracks().forEach((track) => pc.addTrack(track, call.local));
-      preferPcmu(pc);
       pc.onicecandidate = (event) => {
         if (!event.candidate || !call.active) return;
         sendSocket({
@@ -1699,7 +1684,10 @@
     const payload = message.payload || {};
     if (!call.pc) return;
     if (payload.kind === "reject") {
-      toast(payload.reason === "calls-disabled" ? "现场已关闭远程接听" : "现场拒绝了本次通话");
+      if (payload.reason === "calls-disabled") toast("现场已关闭远程接听");
+      else if (payload.reason === "busy") toast("现场设备正在通话中");
+      else if (payload.reason === "audio-unavailable") toast("现场设备无法打开扬声器或音频通道");
+      else toast("现场拒绝了本次通话");
       void endCall(false);
       return;
     }

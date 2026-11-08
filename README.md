@@ -35,7 +35,7 @@
 - 窗口关闭由 Rust 拦截；强杀进程 / 断电 / 断网由服务端在 45 秒（可配置）后触发离线告警。
 - 管理员远程暂停/恢复采集：客户端保持心跳在线，但停止麦克风采集与上报。
 - 支持多设备：每台设备独立令牌、独立状态、独立告警与通话记录。
-- WebRTC 双向对讲、单向广播；支持自动接听或现场手动接听，频道状态与计时可见。关闭自动接听需要密码验证。
+- WebRTC 双向对讲、单向广播；优先 Opus 48 kHz 宽带语音，旧客户端回退 PCMU。接收端带 20 ms 抖动缓冲、乱序重排与丢包隐藏；支持自动接听或现场手动接听，频道状态与计时可见。关闭自动接听需要密码验证。
 - 对讲启用回声消除与半双工防啸叫保护：远端说话时自动压低本端麦克风，避免同场部署时形成声反馈。
 - 管理端与安卓端通话录音使用 48 kHz 混音与 192 kbps Opus 编码，保存清晰的双方语音。
 - 通知板块显示后台发布的标题与内容；通话记录仅展示最近 5 条，支持回放。
@@ -120,7 +120,7 @@ ICE_SERVERS=[{"urls":"stun:stun.qq.com:3478"},{"urls":"stun:stun.miwifi.com:3478
 │  ├─ src/ui.rs             浅色卡片界面、波形、设置抽屉
 │  ├─ src/audio.rs          WASAPI 采集、30s Leq、证据 WAV
 │  ├─ src/windows_audio.rs  WASAPI 采集与 AEC 参考
-│  ├─ src/rtc.rs            WebRTC 对讲与 PCMU 音频
+│  ├─ src/rtc.rs            WebRTC 对讲与 Opus/PCMU 音频
 │  ├─ src/playback.rs       扬声器报警音与 WebM/Opus 回放
 │  └─ assets/               中文后备字体、应用图标
 ├─ client/common/           采集端与服务端共享的音频/配置/安全模块
@@ -241,14 +241,14 @@ npm run build:client:win7
 
 脚本会调用 `scripts/build-win7.ps1`，使用 `client-native/win7-libs` 中的 Windows 导入库，
 并把 `combase.dll` 导入重定向到 `ole32.dll`，产物为 `dist\soundguard-client-win7.exe`。
-Win7 安装包为 `dist\soundguard-client-win7-setup-0.2.8.exe`，支持开机自启。
+Win7 安装包为 `dist\soundguard-client-win7-setup-0.2.9.exe`，支持开机自启。
 
 ### 4.6 安卓 App
 
 仓库已包含可直接安装的 APK：
 
 ```text
-dist\soundguard-android-0.2.8.apk
+dist\soundguard-android-0.2.9.apk
 ```
 
 安装后打开 **声垣**：

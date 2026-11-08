@@ -79,6 +79,9 @@ impl AudioEngineHandle {
     pub fn test_signal(&self) {
         self.shared.ready.store(true, Ordering::SeqCst);
         self.shared.set_capturing(true);
-        self.shared.push_block(&[0.1; 480], 1, 48000);
+        let tone: Vec<f32> = (0..480)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 48_000.0).sin() * 0.3)
+            .collect();
+        self.shared.push_block(&tone, 1, 48000);
     }
 }

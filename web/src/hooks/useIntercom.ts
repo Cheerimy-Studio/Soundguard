@@ -75,20 +75,6 @@ interface CallAudioGuard {
  * shortly after the remote is quiet. Using the track itself avoids a second
  * audio graph, so auto-answer and background calls keep working.
  */
-// Native collectors answer with PCMU/8000; force the browser sender to match.
-function preferPcmu(pc: RTCPeerConnection) {
-  try {
-    const transceiver = pc
-      .getTransceivers()
-      .find((item) => item.sender?.track?.kind === "audio");
-    const codecs = RTCRtpSender.getCapabilities?.("audio")?.codecs ?? [];
-    const pcmu = codecs.filter((codec) => /PCMU\/8000/i.test(codec.mimeType));
-    if (transceiver && pcmu.length) transceiver.setCodecPreferences(pcmu);
-  } catch (error) {
-    console.warn("codec preference failed", error);
-  }
-}
-
 function createCallAudioGuard(localStream: MediaStream): CallAudioGuard | null {
   const AudioContextClass =
     window.AudioContext ||
@@ -481,7 +467,11 @@ export function useIntercom({
       const payload = message.payload as SignalPayload | undefined;
       if (!pc || !payload) return;
       if (payload.kind === "reject") {
-        fail(payload.reason === "calls-disabled" ? "现场设备已关闭远程接听" : "现场设备拒绝了本次通话");
+        if (payload.reason === "calls-disabled") fail("现场设备已关闭远程接听");
+        else if (payload.reason === "busy") fail("现场设备正在通话中");
+        else if (payload.reason === "audio-unavailable") {
+          fail("现场设备无法打开扬声器或音频通道，请检查客户端音频设备");
+        } else fail("现场设备拒绝了本次通话");
         return;
       }
       if (payload.kind === "answer" && payload.sdp) {
@@ -567,7 +557,6 @@ export function useIntercom({
         pcRef.current = pc;
 
         activeStream.getTracks().forEach((track) => pc.addTrack(track, activeStream));
-        preferPcmu(pc);
         pc.onicecandidate = (event) => {
           if (!event.candidate || callIdRef.current !== callId) return;
           sendSignal({

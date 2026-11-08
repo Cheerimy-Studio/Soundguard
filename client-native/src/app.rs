@@ -641,7 +641,7 @@ mod tests {
         let path = app.config_path.clone();
         app.audio.stop();
         drop(app);
-        let mut real = SoundGuardApp::initialize(
+        let real = SoundGuardApp::initialize(
             path.clone(),
             vec!["client".into(), "--screenshot".into(), "output.png".into()],
         );

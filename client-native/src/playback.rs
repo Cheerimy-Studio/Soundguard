@@ -79,13 +79,23 @@ impl AudioOutput {
         let _ = self.tx.try_send(Output::Stop);
     }
     #[cfg(test)]
-    pub fn test_null() -> Self {
+    pub fn test_capture() -> (Self, mpsc::Receiver<Vec<f32>>) {
         let (tx, rx) = mpsc::sync_channel(32);
-        std::thread::spawn(move || while rx.recv().is_ok() {});
-        Self {
-            tx,
-            generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        }
+        let (captured_tx, captured_rx) = mpsc::sync_channel(32);
+        std::thread::spawn(move || {
+            while let Ok(msg) = rx.recv() {
+                if let Output::Pcm(_, _, pcm, _, _) = msg {
+                    let _ = captured_tx.try_send(pcm);
+                }
+            }
+        });
+        (
+            Self {
+                tx,
+                generation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            },
+            captured_rx,
+        )
     }
 }
 #[derive(Debug, Clone, Default)]
@@ -371,6 +381,33 @@ pub fn play_alarm(volume: f32) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn eight_khz_call_audio_keeps_its_pitch_after_resampling() {
+        use rodio::buffer::SamplesBuffer;
+        use rodio::source::UniformSourceIterator;
+        let tone: Vec<f32> = (0..160)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 8000.0).sin())
+            .collect();
+        let source = SamplesBuffer::new(1, 8000, tone);
+        let converted: Vec<f32> = UniformSourceIterator::new(source, 2, 48_000)
+            .take(2_000)
+            .collect();
+        // 20 ms at 48 kHz stereo is 960 frames (1920 interleaved samples).
+        assert!(
+            (converted.len() as i32 - 1920).abs() <= 32,
+            "unexpected resampled length {}",
+            converted.len()
+        );
+        let left: Vec<f32> = converted.iter().step_by(2).copied().collect();
+        let rms = (left.iter().map(|s| s * s).sum::<f32>() / left.len() as f32).sqrt();
+        assert!(rms > 0.5, "resampled tone is too quiet: {rms}");
+        let crossings = left
+            .windows(2)
+            .filter(|pair| (pair[0] < 0.0) != (pair[1] < 0.0))
+            .count();
+        // 440 Hz for 20 ms is about 8.8 cycles, i.e. 17.6 zero crossings.
+        assert!((12..=24).contains(&crossings), "pitch shifted: {crossings} crossings");
+    }
     #[test]
     fn decodes_webm_opus_without_losing_tail() {
         let bytes = include_bytes!("../tests/fixtures/browser-tone.webm");
