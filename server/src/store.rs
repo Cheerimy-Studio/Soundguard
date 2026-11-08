@@ -720,7 +720,7 @@ fn prune_alerts(alerts: &mut Vec<Alert>) -> Vec<String> {
     for alert in alerts.drain(..) {
         let count = counts.entry(alert.device_id.clone()).or_insert(0);
         *count += 1;
-        if *count <= 50 {
+        if *count <= MAX_ALERTS_PER_DEVICE {
             kept.push(alert);
         } else if let Some(file) = alert.evidence_file {
             dropped.push(file);

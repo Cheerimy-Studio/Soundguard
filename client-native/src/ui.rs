@@ -1,4 +1,4 @@
-//! Legacy layout measurements and colors, drawn entirely with egui.
+//! Native collector interface.
 use crate::{
     app::{Action, Phase, SoundGuardApp},
     net::Command,
@@ -93,7 +93,6 @@ fn legacy_switch(ui: &mut egui::Ui, value: &mut bool) -> egui::Response {
     });
     response
 }
-/// Text-first brand lockup; the legacy waveform app icon is intentionally not used here.
 fn brand_lockup(ui: &egui::Ui, origin: egui::Pos2, subtitle: Option<&str>) {
     let p = ui.painter();
     let mark = Rect::from_min_size(origin, vec2(36.0, 36.0));
@@ -401,7 +400,7 @@ impl SoundGuardApp {
                     ui.add_space(46.0);
                     ui.label(R::new("开始前请确认").size(21.0).strong().color(TEXT));
                     ui.label(
-                        R::new("声垣只做声音监测，不录音、不采集画面；以下内容与你的日常使用有关。")
+                        R::new("声垣采集环境声音用于分贝监测；启用取证或对讲时会保存录音，不采集画面。")
                             .size(12.0)
                             .color(MUTED),
                     );
@@ -872,8 +871,8 @@ impl SoundGuardApp {
         let y = |db: f64| {
             plot.bottom() - ((db - lo) / (hi - lo)).clamp(0.0, 1.0) as f32 * plot.height()
         };
-        for i in 0..=4 {
-            let value = lo + (hi - lo) * i as f64 / 4.0;
+        for i in 0..=(hi as u32 / 20) {
+            let value = i as f64 * 20.0;
             let yy = y(value);
             p.line_segment(
                 [pos2(plot.left(), yy), pos2(plot.right(), yy)],
@@ -892,7 +891,7 @@ impl SoundGuardApp {
             pos2(plot.left(), plot.bottom() + 6.0),
             8.0,
             MUTED,
-            "开始",
+            "30 秒前",
         );
         p.text(
             pos2(plot.right(), plot.bottom() + 6.0),
@@ -934,15 +933,15 @@ impl SoundGuardApp {
             );
         }
         if !self.waveform.is_empty() {
-            let buffer = 300.0_f32;
+            let now = chrono::Utc::now().timestamp_millis() as f64 / 1000.0;
             let points: Vec<_> = self
                 .waveform
                 .iter()
-                .enumerate()
-                .map(|(index, v)| {
+                .filter(|v| v[0] >= now - 30.0)
+                .map(|v| {
                     pos2(
                         plot.left()
-                            + ((index as f32 / (buffer - 1.0)).min(1.0)) * plot.width(),
+                            + ((v[0] - (now - 30.0)) / 30.0).clamp(0.0, 1.0) as f32 * plot.width(),
                         y(v[1]),
                     )
                 })
@@ -1282,7 +1281,7 @@ impl SoundGuardApp {
                 ui.add_space(12.0);
                 ui.label(
                     R::new(if action == Action::Exit {
-                        "为防止误关闭，请输入本地密码或管理端下发的 6 位动态验证码确认。"
+                        "请输入本地密码、管理端固定密码或 6 位动态验证码确认关闭。"
                     } else {
                         "请输入本地密码、管理端固定密码或动态验证码以继续。"
                     })

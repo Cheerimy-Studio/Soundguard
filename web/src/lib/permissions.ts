@@ -6,7 +6,10 @@ export function canOperate(role?: UserRole) { return role === "super_admin" || r
 export const rolePermissions = [
   { label: "监测、对讲和证据", values: ["全部设备", "全部设备", "分配的设备"] },
   { label: "设备接入和令牌", values: ["可管理", "可管理", "不可管理"] },
-  { label: "全局策略和计划任务", values: ["可修改", "可修改", "仅查看"] },
+  { label: "全局策略", values: ["可修改", "可修改", "仅查看"] },
+  { label: "全局采集计划", values: ["可修改", "不可修改", "不可修改"] },
+  { label: "设备采集计划", values: ["可修改", "可修改", "不可修改"] },
+  { label: "设备阈值、冷却和取证", values: ["可修改", "可修改", "分配的设备"] },
   { label: "账号和权限分配", values: ["可修改", "仅查看", "不可查看"] },
   { label: "密钥、固定密码、留存和升级", values: ["可修改", "不可修改", "不可修改"] },
 ];

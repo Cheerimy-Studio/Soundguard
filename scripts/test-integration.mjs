@@ -21,7 +21,7 @@ let child, log = '', checks = 0;
 const env = { ...process.env, DATA_DIR: data, WEB_DIST: join(root, 'web/dist'), BIND_ADDR: '127.0.0.1', PORT: String(port),
   ADMIN_PASSWORD: 'Integration-pass-123', JWT_SECRET: 'test-only-secret-123456789012345678901234567890',
   DEVICE_ID: 'initial-device', DEVICE_TOKEN: 'initial-device-token-test-only', STOP_PIN: 'test-stop-password',
-  SMTP_HOST: '', TLS_CERT: '', TLS_KEY: '', MEDIA_KEY_FILE: join(data, 'media-key'), CORS_ORIGINS: 'https://admin.example',
+  SMTP_HOST: '', TLS_CERT: '', TLS_KEY: '', ICE_SERVERS: '[{"urls":"stun:test.example:3478"}]', MEDIA_KEY_FILE: join(data, 'media-key'), CORS_ORIGINS: 'https://admin.example',
   ALERT_TO: '', REPORT_TO: '', ADMIN_EMAIL: '', DAILY_REPORT_ENABLED: 'false', THRESHOLD_DB: '65', ALERT_COOLDOWN_SECS: '30',
   OFFLINE_TIMEOUT_SECS: '20', RETENTION_DAYS: '30' };
 async function start() {
@@ -110,6 +110,7 @@ try {
   await req('/devices/room-a/settings', { token: operator, method: 'PUT', body: { captureStart: '08:00' }, status: 403 }); checks++;
   const heartbeat = (await req('/device/heartbeat', { deviceToken: deviceA.token, body: { deviceId: 'room-a', monitoring: true } })).body;
   assert.equal(heartbeat.thresholdDb, 55);
+  assert.deepEqual(heartbeat.iceServers,JSON.parse(env.ICE_SERVERS)); checks++;
 
   // Operational role is global for devices, scoped by capability for protected actions.
   const manager = (await req('/users', { ...auth, body: { username: 'manager', email: 'manager@example.com', password: 'Manager-pass-123', role: 'update_admin', deviceIds: [] } })).body;
@@ -150,6 +151,14 @@ try {
   await req('/device/live',{deviceToken:deviceB.token,body:{deviceId:'room-b',currentDb:90,averageDb:90,peakDb:100,capturing:true}});
   const ranks=(await req('/war-mode/leaderboard',{token:operator})).body.leaderboard;
   assert.deepEqual(ranks.map(d=>d.id),['room-a']);checks++;
+  // No stale measurement from intercom or system playback may enter any leaderboard.
+  await req('/device/live',{deviceToken:deviceA.token,body:{deviceId:'room-a',currentDb:80,averageDb:80,peakDb:90,capturing:true,suspended:true}});
+  assert.equal((await req('/war-mode/leaderboard',{token:operator})).body.leaderboard.length,0); checks++;
+  const deviceRanks=(await req('/device/war-mode/leaderboard',{deviceToken:deviceA.token})).body.leaderboard;
+  assert.ok(!deviceRanks.some(d=>d.id==='room-a')); checks++;
+  await req('/device/live',{deviceToken:deviceA.token,body:{deviceId:'room-a',currentDb:80,averageDb:80,peakDb:90,capturing:true,systemPlaying:true,aecEnabled:false}});
+  assert.equal((await req('/war-mode/leaderboard',{token:operator})).body.leaderboard.length,0); checks++;
+  await req('/device/live',{deviceToken:deviceA.token,body:{deviceId:'room-a',currentDb:80,averageDb:80,peakDb:90,capturing:true}});
   const managerWs=await openSocket(`/ws?token=${managerToken}`);
   const managerSnapshot=await managerWs.wait(m=>m.type==='snapshot');assert.ok(managerSnapshot.data.devices.some(d=>d.id==='room-b'));checks++;
   const normalized=(await req('/settings',{...auth,method:'PUT',body:{...globalSettings,captureStart:'7:3',captureEnd:'9:5'}})).body;
@@ -163,6 +172,21 @@ try {
   await req('/settings',{...auth,method:'PUT',body:globalSettings});
   const managerDeviceSchedule=(await req('/devices/room-a/settings',{...managerAuth,method:'PUT',body:{captureStart:'08:00',captureEnd:'09:30'}})).body;
   assert.equal(managerDeviceSchedule.settings.captureStart,'08:00'); assert.equal(managerDeviceSchedule.settings.captureEnd,'09:30'); checks++;
+  // Scoped policy edits cannot clear a protected schedule, including via explicit null.
+  const scopedPolicy=(await req('/devices/room-a/settings',{token:operator,method:'PUT',body:{thresholdDb:57}})).body;
+  assert.equal(scopedPolicy.settings.captureStart,'08:00');
+  assert.equal(scopedPolicy.settings.captureEnd,'09:30'); checks++;
+  await req('/devices/room-a/settings',{token:operator,method:'PUT',body:{captureStart:null,captureEnd:null},status:403});
+  const unchangedPolicy=(await req('/devices/room-a/settings',{...auth,method:'PUT',body:{}})).body;
+  assert.equal(unchangedPolicy.settings.thresholdDb,57);
+  assert.equal(unchangedPolicy.settings.captureStart,'08:00'); checks++;
+  await req('/devices/room-a/settings',{...auth,method:'PUT',body:{thresholdDb:55}});
+  await req('/devices/room-a',{...auth,method:'PUT',body:{name:'Do not save',settings:{thresholdDb:999}},status:400});
+  const afterRejected=(await req('/devices',auth)).body.devices.find(d=>d.id==='room-a');
+  assert.equal(afterRejected.name,'Room A'); assert.equal(afterRejected.settings.thresholdDb,55); checks++;
+  const atomicDevice=(await req('/devices/room-a',{...auth,method:'PUT',body:{name:'Room A',settings:{thresholdDb:56}}})).body;
+  assert.equal(atomicDevice.settings.thresholdDb,56); assert.equal(atomicDevice.settings.captureStart,'08:00'); checks++;
+  await req('/devices/room-a/settings',{...auth,method:'PUT',body:{thresholdDb:55}});
   const deviceScheduleBeat=(await req('/device/heartbeat',{deviceToken:deviceA.token,body:{deviceId:'room-a',monitoring:true}})).body;
   assert.equal(deviceScheduleBeat.captureStart,'08:00'); assert.equal(deviceScheduleBeat.captureEnd,'09:30'); checks++;
   await req('/devices/room-a/settings',{token:operator,method:'PUT',body:{captureStart:'07:00',captureEnd:''},status:403});

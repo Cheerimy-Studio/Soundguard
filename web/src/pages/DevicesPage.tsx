@@ -39,6 +39,9 @@ interface EditState {
   alertCooldownSecs: string;
   offlineTimeoutSecs: string;
   autoRecordEvidence: "" | "true" | "false";
+  followSchedule: boolean;
+  captureStart: string;
+  captureEnd: string;
 }
 
 function optionalNumber(value: string): number | null {
@@ -114,17 +117,15 @@ export function DevicesPage({
     try {
       await api.updateDevice(edit.device.id, {
         name: edit.name.trim(),
-      });
-      await api.updateDeviceSettings(edit.device.id, {
-        thresholdDb: optionalNumber(edit.thresholdDb),
-        alertCooldownSecs: optionalNumber(edit.alertCooldownSecs),
-        offlineTimeoutSecs: optionalNumber(edit.offlineTimeoutSecs),
-        autoRecordEvidence:
-          edit.autoRecordEvidence === ""
-            ? null
-            : edit.autoRecordEvidence === "true",
-        captureStart: edit.device.settings.captureStart,
-        captureEnd: edit.device.settings.captureEnd,
+        settings: {
+          thresholdDb: optionalNumber(edit.thresholdDb),
+          alertCooldownSecs: optionalNumber(edit.alertCooldownSecs),
+          offlineTimeoutSecs: optionalNumber(edit.offlineTimeoutSecs),
+          autoRecordEvidence:
+            edit.autoRecordEvidence === "" ? null : edit.autoRecordEvidence === "true",
+          captureStart: edit.followSchedule ? null : edit.captureStart,
+          captureEnd: edit.followSchedule ? null : edit.captureEnd,
+        },
       });
       setEdit(null);
       await onDevicesUpdated();
@@ -177,7 +178,7 @@ export function DevicesPage({
       `服务器地址：${server}`,
       `设备编号：${access.device.id}`,
       `设备令牌：${access.token}`,
-      "在采集端右上角设置中填写以上信息（需要关闭密码验证）。",
+      "在采集端设置中填写以上信息，使用本地密码或管理员验证码验证。",
     ].join("\n");
     try {
       await navigator.clipboard.writeText(text);
@@ -272,7 +273,7 @@ export function DevicesPage({
                 </div>
                 <div>
                   <dt>独立阈值</dt>
-                  <dd>{device.settings.thresholdDb ? `${formatDb(device.settings.thresholdDb)} dB` : "跟随系统默认"}</dd>
+                  <dd>{device.settings.thresholdDb != null ? `${formatDb(device.settings.thresholdDb)} dB` : "跟随系统默认"}</dd>
                 </div>
                 <div>
                   <dt>最后心跳</dt>
@@ -294,28 +295,32 @@ export function DevicesPage({
                   <ArrowRightLeft size={14} />
                   {selected ? "正在查看" : "切换到此设备"}
                 </button>
-                <button
+                {canManage && <button
                   type="button"
                   className="ghost-button small"
-                  onClick={() =>
+                  onClick={() => {
+                    setFormError("");
                     setEdit({
                       device,
                       name: device.name,
                       thresholdDb: device.settings.thresholdDb?.toString() ?? "",
                       alertCooldownSecs: device.settings.alertCooldownSecs?.toString() ?? "",
                       offlineTimeoutSecs: device.settings.offlineTimeoutSecs?.toString() ?? "",
+                      followSchedule: device.settings.captureStart == null && device.settings.captureEnd == null,
+                      captureStart: device.settings.captureStart ?? "",
+                      captureEnd: device.settings.captureEnd ?? "",
                       autoRecordEvidence:
                         device.settings.autoRecordEvidence === null
                           ? ""
                           : device.settings.autoRecordEvidence
                             ? "true"
                             : "false",
-                    })
-                  }
+                    });
+                  }}
                 >
                   <Edit3 size={14} />
                   编辑
-                </button>
+                </button>}
                 {canManage && (
                   <>
                     <button
@@ -352,7 +357,7 @@ export function DevicesPage({
                 <div className="eyebrow">新设备</div>
                 <h2>添加采集设备</h2>
               </div>
-              <button type="button" className="icon-button ghost" onClick={() => setAddOpen(false)} aria-label="关闭">
+              <button type="button" className="icon-button ghost" disabled={busy} onClick={() => setAddOpen(false)} aria-label="关闭">
                 <X size={17} />
               </button>
             </div>
@@ -382,7 +387,7 @@ export function DevicesPage({
             </label>
             {formError && <div className="form-error">{formError}</div>}
             <div className="modal-actions">
-              <button type="button" className="ghost-button" onClick={() => setAddOpen(false)}>取消</button>
+              <button type="button" className="ghost-button" disabled={busy} onClick={() => setAddOpen(false)}>取消</button>
               <button type="submit" className="primary-button" disabled={busy || !name.trim()}>
                 {busy ? <LoaderCircle size={15} className="spin" /> : <Plus size={15} />}
                 {busy ? "正在创建" : "创建设备"}
@@ -436,7 +441,7 @@ export function DevicesPage({
               </div>
             </div>
             <ol className="access-steps">
-              <li>点击采集端右上角设置，输入管理员关闭密码完成验证。</li>
+              <li>点击采集端右上角设置，输入本地密码或管理员验证码完成验证。</li>
               <li>填写服务器地址、设备编号和设备令牌。</li>
               <li>保存后客户端会自动重连，本页状态将变为在线。</li>
             </ol>
@@ -468,7 +473,7 @@ export function DevicesPage({
                 <div className="eyebrow">编辑设备</div>
                 <h2>编辑设备信息</h2>
               </div>
-              <button type="button" className="icon-button ghost" onClick={() => setEdit(null)} aria-label="关闭">
+              <button type="button" className="icon-button ghost" disabled={busy} onClick={() => setEdit(null)} aria-label="关闭">
                 <X size={17} />
               </button>
             </div>
@@ -541,9 +546,23 @@ export function DevicesPage({
                 </select>
               </label>
             </div>
+            <div className="device-schedule-block">
+              <label className="check-row">
+                <input type="checkbox" checked={edit.followSchedule}
+                  onChange={(event) => setEdit({ ...edit, followSchedule: event.target.checked })} />
+                跟随系统采集计划
+              </label>
+              {!edit.followSchedule && <div className="form-grid two">
+                <label className="form-field"><span>开始时间</span><input type="time" value={edit.captureStart}
+                  onChange={(event) => setEdit({ ...edit, captureStart: event.target.value })} /></label>
+                <label className="form-field"><span>结束时间</span><input type="time" value={edit.captureEnd}
+                  onChange={(event) => setEdit({ ...edit, captureEnd: event.target.value })} /></label>
+              </div>}
+              <small>两端留空或相同表示全天；开始晚于结束表示跨夜。</small>
+            </div>
             {formError && <div className="form-error">{formError}</div>}
             <div className="modal-actions">
-              <button type="button" className="ghost-button" onClick={() => setEdit(null)}>取消</button>
+              <button type="button" className="ghost-button" disabled={busy} onClick={() => setEdit(null)}>取消</button>
               <button type="submit" className="primary-button" disabled={busy || !edit.name.trim()}>
                 {busy ? <LoaderCircle size={15} className="spin" /> : <Edit3 size={15} />}
                 保存
@@ -568,7 +587,7 @@ export function DevicesPage({
                 : `更换后，「${confirmAction.device.name}」的旧令牌立即失效。采集端必须更新令牌后才能恢复连接。`}
             </p>
             <div className="modal-actions">
-              <button type="button" className="ghost-button" onClick={() => setConfirmAction(null)}>取消</button>
+              <button type="button" className="ghost-button" disabled={busy} onClick={() => setConfirmAction(null)}>取消</button>
               <button
                 type="button"
                 className={confirmAction.kind === "delete" ? "danger-button" : "primary-button"}

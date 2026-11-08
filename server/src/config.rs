@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde_json::{json, Value};
+use serde_json::Value;
 use tracing::warn;
 
 use crate::models::{default_ice_servers, Settings};
@@ -41,6 +41,7 @@ pub struct SettingsOverrides {
     pub alert_cooldown_secs: Option<u64>,
     pub auto_record_evidence: Option<bool>,
     pub retention_days: Option<u32>,
+    pub ice_servers: Option<Value>,
 }
 
 impl SettingsOverrides {
@@ -54,9 +55,11 @@ impl SettingsOverrides {
             && self.alert_cooldown_secs.is_none()
             && self.auto_record_evidence.is_none()
             && self.retention_days.is_none()
+            && self.ice_servers.is_none()
     }
 
     pub fn apply_to(&self, settings: &mut Settings) {
+        if let Some(value) = &self.ice_servers { settings.ice_servers = value.clone(); }
         if let Some(value) = self.threshold_db {
             settings.threshold_db = value;
         }
@@ -88,6 +91,7 @@ impl SettingsOverrides {
 
     pub fn labels(&self) -> Vec<&'static str> {
         let mut labels = Vec::new();
+        if self.ice_servers.is_some() { labels.push("ICE_SERVERS"); }
         if self.threshold_db.is_some() {
             labels.push("THRESHOLD_DB");
         }
@@ -137,7 +141,6 @@ pub struct Config {
     pub stop_pin: String,
     pub public_base_url: String,
     pub smtp: Option<SmtpConfig>,
-    pub ice_servers: Value,
     pub cors_origins: Vec<String>,
     pub tls_cert: Option<PathBuf>,
     pub tls_key: Option<PathBuf>,
@@ -310,17 +313,11 @@ impl Config {
             None => None,
         };
 
-        let ice_servers = var("ICE_SERVERS")
-            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-            .unwrap_or_else(|| {
-                json!([
-                    { "urls": "stun:stun.qq.com:3478" },
-                    { "urls": "stun:stun.miwifi.com:3478" },
-                    { "urls": "stun:stun.chat.bilibili.com:3478" },
-                    { "urls": "stun:stun.l.google.com:19302" },
-                    { "urls": "stun:stun.cloudflare.com:3478" }
-                ])
-            });
+        let ice_servers: Value = match var("ICE_SERVERS") {
+            Some(raw) => serde_json::from_str(&raw)
+                .map_err(|error| anyhow::anyhow!("ICE_SERVERS JSON 格式无效: {error}"))?,
+            None => default_ice_servers(),
+        };
 
         let jwt_secret = match var("JWT_SECRET") {
             Some(value) if value.len() >= 32 => value,
@@ -378,6 +375,7 @@ impl Config {
             .or_else(|| alert_override.clone());
         let admin_email = var("ADMIN_EMAIL").or_else(|| alert_recipients.first().cloned());
         let env_overrides = SettingsOverrides {
+            ice_servers: var("ICE_SERVERS").map(|_| ice_servers.clone()),
             threshold_db: opt_f64("THRESHOLD_DB"),
             alert_recipients: alert_override,
             report_recipients: report_override,
@@ -390,7 +388,7 @@ impl Config {
                 .map(|value| value.min(u32::MAX as u64) as u32),
         };
         let mut default_settings = Settings {
-            ice_servers: default_ice_servers(),
+            ice_servers: ice_servers.clone(),
             threshold_db: parse_f64("THRESHOLD_DB", 65.0),
             alert_recipients,
             report_recipients,
@@ -446,7 +444,6 @@ impl Config {
                 crate::nvidia_bnr::DEFAULT_FUNCTION_ID,
             ),
             smtp,
-            ice_servers,
             cors_origins,
             tls_cert,
             tls_key,
@@ -503,6 +500,7 @@ fn ensure_dir(path: &Path) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn sample_settings() -> Settings {
         Settings {
@@ -535,6 +533,7 @@ mod tests {
     fn env_overrides_replace_only_configured_fields() {
         let mut settings = sample_settings();
         let overrides = SettingsOverrides {
+            ice_servers: Some(json!([{ "urls": "stun:test.example:3478" }])),
             threshold_db: Some(58.5),
             alert_recipients: Some(vec!["env@example.com".to_string()]),
             ..Default::default()
@@ -544,7 +543,8 @@ mod tests {
         assert_eq!(settings.alert_recipients, vec!["env@example.com"]);
         assert_eq!(settings.report_recipients, vec!["report@example.com"]);
         assert_eq!(settings.offline_timeout_secs, 45);
-        assert_eq!(overrides.labels(), vec!["THRESHOLD_DB", "ALERT_TO"]);
+        assert_eq!(overrides.labels(), vec!["ICE_SERVERS", "THRESHOLD_DB", "ALERT_TO"]);
+        assert_eq!(settings.ice_servers, json!([{ "urls": "stun:test.example:3478" }]));
     }
 
     #[test]

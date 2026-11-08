@@ -446,7 +446,9 @@ impl SoundGuardApp {
             self.status = NetState::default();
             self.waveform.clear();
         }
+        self.net.send(Command::AutoAnswer(self.config.auto_answer));
         self.settings_open = false;
+        self.reveal_token = false;
         self.show_toast("设置已保存", false);
     }
     pub fn cancel_settings(&mut self) {

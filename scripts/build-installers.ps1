@@ -1,4 +1,4 @@
-# Builds the per-user client installer and the Windows server installer.
+﻿# Builds the per-user client installer and the Windows server installer.
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $candidates = @(

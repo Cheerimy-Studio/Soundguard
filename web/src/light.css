@@ -2239,3 +2239,46 @@ input[type="range"]::-webkit-slider-thumb {
 .device-schedule-block .field-grid {
   margin-top: 10px;
 }
+
+/* Shared controls and readable administration layouts. */
+:root { --muted: #617187; --subtle: #7b899b; }
+.nav-copy strong { font-size: 13px; font-weight: 600; }
+.nav-item { min-height: 46px; border-radius: 10px; }
+.nav-icon, .nav-item.is-active .nav-icon { background: transparent !important; }
+.panel, .dash-card { border-radius: 14px; }
+.device-access-card.is-selected { border-color: #82bdc0 !important; box-shadow: 0 0 0 1px #82bdc0 !important; }
+.device-access-title h3 { line-height: 1.5; overflow-wrap: anywhere; }
+.device-access-facts dd { overflow-wrap: anywhere; min-width: 0; }
+.device-access-actions { flex-wrap: wrap; gap: 8px; }
+.modal-panel { max-height: calc(100dvh - 40px); overflow-y: auto; overscroll-behavior: contain; }
+.modal-panel h2 { font-size: 20px; line-height: 1.4; }
+.modal-help, .form-field small, .device-schedule-block small { line-height: 1.7; }
+.form-field > span { color: var(--text-soft); font-size: 13px; }
+.form-field input, .form-field select { min-height: 40px; }
+.device-schedule-block .form-grid { margin-top: 12px; }
+.device-schedule-block > small { display: block; margin-top: 8px; color: var(--muted); }
+.account-chip { cursor: pointer; font: inherit; }
+.account-chip:hover { border-color: var(--accent); color: var(--accent); }
+button:focus-visible, a:focus-visible, select:focus-visible { outline: 3px solid #82bdc0; outline-offset: 3px; }
+button:disabled { cursor: default; }
+.device-loading { display: flex; align-items: center; gap: 9px; padding: 12px 30px; color: var(--accent); background: var(--accent-soft); }
+.page-content[inert] { opacity: .5; }
+.settings-section-nav { flex-wrap: wrap; }
+@media (max-width: 760px) {
+  .topbar { padding: 16px; gap: 12px; flex-wrap: wrap; }
+  .topbar-right { flex-wrap: wrap; gap: 8px; min-width: 0; }
+  .account-chip { display: inline-flex; }
+  .device-switcher { min-width: 0; flex: 1; }
+  .device-switcher select { min-width: 0; max-width: 100%; }
+  .page-content { padding: 16px 14px 96px; }
+  .modal-overlay { padding: 12px; }
+  .modal-panel { max-height: calc(100dvh - 24px); padding: 20px; }
+  .modal-actions { flex-wrap: wrap; }
+  .devices-hero { align-items: flex-start; gap: 16px; }
+  .device-readout-row strong { font-size: 15px; }
+  .access-details code, .token-field code { overflow-wrap: anywhere; word-break: break-all; }
+  .device-loading { padding: 12px 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}

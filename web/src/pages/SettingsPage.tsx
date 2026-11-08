@@ -248,8 +248,10 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
         alertCooldownSecs: policy.follow.alertCooldownSecs ? null : policy.values.alertCooldownSecs,
         offlineTimeoutSecs: policy.follow.offlineTimeoutSecs ? null : policy.values.offlineTimeoutSecs,
         autoRecordEvidence: policy.follow.autoRecordEvidence ? null : policy.values.autoRecordEvidence,
-        captureStart: policy.follow.capture ? null : policy.values.captureStart,
-        captureEnd: policy.follow.capture ? null : policy.values.captureEnd,
+        ...(canConfigure ? {
+          captureStart: policy.follow.capture ? null : policy.values.captureStart,
+          captureEnd: policy.follow.capture ? null : policy.values.captureEnd,
+        } : {}),
       });
       if (policyBound.current === updated.id) {
         policyEditing.current=false;
@@ -287,7 +289,7 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
     try {
       const result = await api.applyUpdate();
       if (result.ok) {
-        setUpdateMessage(`已更新到 v${result.newVersion}，服务端正在重启，请稍后刷新页面`);
+        setUpdateMessage(result.restartRequired ? `v${result.newVersion} 程序已下载，请手动重启服务端后刷新页面` : `已更新到 v${result.newVersion}，服务端正在重启，请稍后刷新页面`);
       } else {
         setUpdateMessage(result.message || "当前已是最新版本");
       }
@@ -967,7 +969,7 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
               <div className="settings-icon emerald"><RefreshCw size={18} /></div>
               <div>
                 <h3>软件更新</h3>
-                <p>从 GitHub Release 检查并安装服务端更新。更新完成后服务端会自动重启，管理端请刷新页面。</p>
+                <p>检查 GitHub 发布版本。在线更新仅替换服务端程序，需程序目录可写；systemd 默认安装和 Docker 部署请按发布说明更新完整包。</p>
               </div>
             </div>
             {updateCheck && (

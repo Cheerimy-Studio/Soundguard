@@ -77,7 +77,7 @@ impl Admin {
         if self.is_update_admin() {
             Ok(())
         } else {
-            Err(AppError::forbidden("需要更新管理员或超级管理员权限"))
+            Err(AppError::forbidden("需要运营管理员或超级管理员权限"))
         }
     }
 
@@ -975,16 +975,18 @@ async fn update_device(
         .store
         .mutate(|state| {
             let name = validate_device_name(&state.devices, &name, Some(&id))?;
-            let target = state.devices.iter_mut().find(|device| device.id == id);
-            Ok::<_, AppError>(target.map(|device| {
-                device.name = name;
-                let offline =
-                    crate::models::effective_settings(&state.settings, device).offline_timeout_secs;
-                device.view(now, offline)
-            }))
+            let device = state.devices.iter_mut().find(|device| device.id == id)
+                .ok_or_else(|| AppError::not_found("设备不存在"))?;
+            if let Some(patch) = request.settings {
+                let mut settings = patch.apply_to(device.settings.clone());
+                settings.validate_and_normalize().map_err(AppError::bad_request)?;
+                device.settings = settings;
+            }
+            device.name = name;
+            let offline = crate::models::effective_settings(&state.settings, device).offline_timeout_secs;
+            Ok::<_, AppError>(device.view(now, offline))
         })
-        .await??
-        .ok_or_else(|| AppError::not_found("设备不存在"))?;
+        .await??;
     state
         .hub
         .broadcast_event("device", serde_json::to_value(&updated).unwrap_or_default());
@@ -1005,22 +1007,20 @@ async fn update_device_settings(
     {
         return Err(AppError::forbidden("计划任务仅限超级管理员或管理员设置"));
     }
-    let mut settings = request.into_settings();
-    settings
-        .validate_and_normalize()
-        .map_err(AppError::bad_request)?;
     let now = Utc::now();
     let updated = state
         .store
         .mutate(|snapshot| {
-            let target = snapshot.devices.iter_mut().find(|device| device.id == id)?;
+            let target = snapshot.devices.iter_mut().find(|device| device.id == id)
+                .ok_or_else(|| AppError::not_found("设备不存在"))?;
+            let mut settings = request.apply_to(target.settings.clone());
+            settings.validate_and_normalize().map_err(AppError::bad_request)?;
             target.settings = settings;
             let offline =
                 crate::models::effective_settings(&snapshot.settings, target).offline_timeout_secs;
-            Some(target.view(now, offline))
+            Ok::<_, AppError>(target.view(now, offline))
         })
-        .await?
-        .ok_or_else(|| AppError::not_found("设备不存在"))?;
+        .await??;
     state
         .hub
         .broadcast_event("device", serde_json::to_value(&updated).unwrap_or_default());
@@ -2676,27 +2676,34 @@ async fn apply_update(
         })));
     }
 
-    #[cfg(unix)]
-    let asset_url = &check.download_urls.linux_x86_64;
-    #[cfg(windows)]
-    let asset_url = &check.download_urls.windows_server;
+    if !cfg!(all(target_arch = "x86_64", any(target_os = "linux", windows))) {
+        return Err(AppError::bad_request("当前平台请手动安装更新"));
+    }
+    let (asset_url, sha256) = if cfg!(windows) {
+        (&check.download_urls.windows_server, &check.download_urls.windows_sha256)
+    } else {
+        (&check.download_urls.linux_x86_64, &check.download_urls.linux_sha256)
+    };
 
-    crate::update::apply_update(asset_url)
+    crate::update::apply_update(asset_url, sha256)
         .await
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    // Schedule a graceful shutdown so systemd / the service manager restarts
-    // us with the new binary.
-    let config = state.config.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        tracing::info!("Update applied; restarting server (port {})", config.port);
-        std::process::exit(0);
-    });
-
-    Ok(Json(serde_json::json!({
+    let managed_restart = std::env::var_os("INVOCATION_ID").is_some()
+        || std::env::var("SOUNDGUARD_AUTO_RESTART").is_ok_and(|value| value == "1");
+    if managed_restart {
+        let config = state.config.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            tracing::info!("Update applied; restarting server (port {})", config.port);
+            // The supplied systemd unit restarts only non-zero exits.
+            std::process::exit(75);
+        });
+    }
+    Ok(Json(json!({
         "ok": true,
-        "message": "更新完成，服务即将重启",
+        "message": if managed_restart { "更新完成，服务即将重启" } else { "程序已替换，请手动重启服务端以使用新版本" },
+        "restartRequired": !managed_restart,
         "newVersion": check.latest_version,
     })))
 }
@@ -2787,87 +2794,39 @@ async fn get_war_mode(
     })))
 }
 
-/// Device-token-authenticated war leaderboard: all online+monitoring devices
-/// sorted by average dB descending. War mode is a global feature, so no
-/// per-device access filter is needed.
+fn war_rankings(snapshot: &crate::models::PersistedState, user: Option<&CurrentUser>) -> Vec<Value> {
+    let now = Utc::now();
+    let mut devices: Vec<_> = snapshot.devices.iter()
+        .filter(|d| user.is_none_or(|u| u.can_access_device(&d.id)))
+        .filter_map(|d| {
+            let offline = crate::models::effective_settings(&snapshot.settings, d).offline_timeout_secs;
+            let view = d.view(now, offline);
+            let avg = view.live_avg_db?;
+            Some(json!({ "id": d.id, "name": d.name, "avgDb": avg,
+                "peakDb": view.peak_db, "online": view.online }))
+        }).collect();
+    devices.sort_by(|a, b| {
+        b["avgDb"].as_f64().partial_cmp(&a["avgDb"].as_f64())
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a["id"].as_str().cmp(&b["id"].as_str()))
+    });
+    devices
+}
+
 async fn device_war_leaderboard(
     _credential: DeviceAuth,
     State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<Json<Value>, AppError> {
     let snapshot = state.store.snapshot().await;
-    let mut devices: Vec<_> = snapshot
-        .devices
-        .iter()
-        .filter(|d| {
-            d.live_avg_db.is_some()
-                && d.monitoring
-                && d.is_online(
-                    Utc::now(),
-                    crate::models::effective_settings(&snapshot.settings, d).offline_timeout_secs,
-                )
-        })
-        .map(|d| {
-            let offline =
-                crate::models::effective_settings(&snapshot.settings, d).offline_timeout_secs;
-            json!({
-                "id": d.id,
-                "name": d.name,
-                "avgDb": d.live_avg_db,
-                "peakDb": d.peak_db,
-                "online": d.is_online(Utc::now(), offline),
-            })
-        })
-        .collect();
-    devices.sort_by(|a, b| {
-        let a_db = a.get("avgDb").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
-        let b_db = b.get("avgDb").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
-        b_db.partial_cmp(&a_db).unwrap_or(std::cmp::Ordering::Equal)
-    });
-    Ok(Json(json!({ "leaderboard": devices })))
+    Ok(Json(json!({ "leaderboard": war_rankings(&snapshot, None) })))
 }
 
-/// Admin endpoint: war mode leaderboard sorted by average dB.
 async fn war_leaderboard(
     admin: Admin,
     State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<Json<Value>, AppError> {
     let snapshot = state.store.snapshot().await;
-    let mut devices: Vec<_> = snapshot
-        .devices
-        .iter()
-        .filter(|d| {
-            admin.can_access_device(&d.id)
-                && d.live_avg_db.is_some()
-                && d.monitoring
-                && d.is_online(
-                    Utc::now(),
-                    crate::models::effective_settings(&snapshot.settings, d).offline_timeout_secs,
-                )
-        })
-        .map(|d| {
-            let offline =
-                crate::models::effective_settings(&snapshot.settings, d).offline_timeout_secs;
-            json!({
-                "id": d.id,
-                "name": d.name,
-                "avgDb": d.live_avg_db,
-                "peakDb": d.peak_db,
-                "online": d.is_online(Utc::now(), offline),
-            })
-        })
-        .collect();
-    devices.sort_by(|a, b| {
-        let a_db = a
-            .get("avgDb")
-            .and_then(serde_json::Value::as_f64)
-            .unwrap_or(0.0);
-        let b_db = b
-            .get("avgDb")
-            .and_then(serde_json::Value::as_f64)
-            .unwrap_or(0.0);
-        b_db.partial_cmp(&a_db).unwrap_or(std::cmp::Ordering::Equal)
-    });
-    Ok(Json(json!({ "leaderboard": devices })))
+    Ok(Json(json!({ "leaderboard": war_rankings(&snapshot, Some(&admin.user)) })))
 }
 
 async fn admin_ws(
@@ -2914,6 +2873,7 @@ async fn initial_admin_message(state: &AppState, user: &CurrentUser) -> String {
             "devices": device_views(&snapshot, now, user),
             "settings": settings,
             "serverTime": now,
+            "serverUtcOffsetSecs": Local::now().offset().local_minus_utc(),
             "signaling": signaling
         }
     })

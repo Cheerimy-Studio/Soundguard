@@ -33,6 +33,7 @@
     calls: [],
     alerts: [],
     profileGeneration: 0,
+    historyGeneration: 0,
     overTimer: null,
     audioUrl: null,
     audioTitle: "",
@@ -228,6 +229,8 @@
   }
 
   async function request(path, options = {}) {
+    const sessionToken = state.token;
+    const sessionServer = state.server;
     const headers = new Headers(options.headers || {});
     if (options.body && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
@@ -254,7 +257,7 @@
       } catch (error) {
         // Keep the status-based message.
       }
-      if (response.status === 401) {
+      if (response.status === 401 && sessionToken === state.token && sessionServer === state.server) {
         expireSession("登录已过期，请重新输入用户名和密码");
       }
       throw new HttpError(response.status, message);
@@ -264,6 +267,8 @@
   }
 
   async function requestBlob(path) {
+    const sessionToken = state.token;
+    const sessionServer = state.server;
     let response;
     try {
       response = await fetch(`${state.server}/api${path}`, {
@@ -275,7 +280,7 @@
       throw new HttpError(0, "无法下载录音，请检查网络");
     }
     if (!response.ok) {
-      if (response.status === 401) {
+      if (response.status === 401 && sessionToken === state.token && sessionServer === state.server) {
         expireSession("登录已过期，请重新输入用户名和密码");
       }
       throw new HttpError(response.status, `录音加载失败（${response.status}）`);
@@ -284,6 +289,9 @@
   }
 
   function expireSession(message = "请重新登录") {
+    ++state.profileGeneration;
+    ++state.historyGeneration;
+    closePlayer();
     state.token = "";
     state.user = null;
     localStorage.removeItem(LS_TOKEN);
@@ -449,8 +457,9 @@
     const deviceId = state.selectedDeviceId;
     if (!deviceId) return;
     const generation = ++state.profileGeneration;
+    const sessionToken = state.token;
     const overview = await request(`/overview?deviceId=${encodeURIComponent(deviceId)}`);
-    if (generation !== state.profileGeneration) return;
+    if (generation !== state.profileGeneration || deviceId !== state.selectedDeviceId || sessionToken !== state.token) return;
 
     state.overview = overview;
       state.overviewSyncedAt = Date.now();
@@ -473,8 +482,12 @@
 
   async function refreshOverview() {
     if (!state.token || !state.selectedDeviceId) return;
+    const deviceId = state.selectedDeviceId;
+    const generation = state.profileGeneration;
+    const sessionToken = state.token;
     try {
-      const overview = await request(`/overview?deviceId=${encodeURIComponent(state.selectedDeviceId)}`);
+      const overview = await request(`/overview?deviceId=${encodeURIComponent(deviceId)}`);
+      if (generation !== state.profileGeneration || deviceId !== state.selectedDeviceId || sessionToken !== state.token) return;
       state.overview = overview;
       state.overviewSyncedAt = Date.now();
       state.devices = overview.devices || state.devices;
@@ -944,6 +957,8 @@
     $("legendPrimary").textContent = minutes === 0 ? "当前" : "平均";
     $("legendSecondary").textContent = minutes === 0 ? "平均" : "峰值";
     if (minutes === 0) {
+      ++state.historyGeneration;
+      state.historyLoading = false;
       state.history = [];
       state.rangeThreshold = null;
       renderOverList();
@@ -955,6 +970,11 @@
 
   async function loadHistory(minutes) {
     if (!state.selectedDeviceId) return;
+    const generation = ++state.historyGeneration;
+    const deviceId = state.selectedDeviceId;
+    const sessionToken = state.token;
+    const isCurrent = () => generation === state.historyGeneration && deviceId === state.selectedDeviceId
+      && sessionToken === state.token && state.rangeMinutes === minutes;
     state.historyLoading = true;
     $("chartCaption").textContent = "读取中…";
     drawChart();
@@ -968,7 +988,7 @@
         maxPoints: "2000",
       });
       const data = await request(`/readings?${params.toString()}`);
-      if (state.rangeMinutes !== minutes) return;
+      if (!isCurrent()) return;
       state.history = Array.isArray(data.readings) ? data.readings : [];
       state.rangeThreshold = Number(data.thresholdDb ?? state.settings?.thresholdDb ?? 65);
       state.overEvents = state.history
@@ -981,10 +1001,11 @@
       renderOverList();
       drawChart();
     } catch (error) {
+      if (!isCurrent()) return;
       $("chartCaption").textContent = rangeLabel(minutes);
       toast(error.message || "历史数据读取失败");
     } finally {
-      state.historyLoading = false;
+      if (isCurrent()) state.historyLoading = false;
     }
   }
 
@@ -1217,13 +1238,16 @@
   async function toggleCapture() {
     if (!state.device) return;
     const button = $("captureBtn");
+    const deviceId = state.device.id;
+    const generation = state.profileGeneration;
     const next = !state.device.desiredMonitoring;
     button.disabled = true;
     try {
       const result = await request("/device/control", {
         method: "POST",
-        body: JSON.stringify({ deviceId: state.device.id, monitoring: next }),
+        body: JSON.stringify({ deviceId, monitoring: next }),
       });
+      if (generation !== state.profileGeneration || deviceId !== state.selectedDeviceId) return;
       state.device = { ...state.device, ...(result.device || {}) };
       if (result.settings) state.settings = result.settings;
       renderDashboard();
@@ -1241,6 +1265,11 @@
       await endCall(true, "设备已切换，通话结束");
     }
     closePlayer();
+    ++state.profileGeneration;
+    ++state.historyGeneration;
+    state.calls = []; state.alerts = []; state.history = []; state.overEvents = [];
+    state.historyLoading = false;
+    renderRecords();
     state.selectedDeviceId = deviceId;
     state.device = state.devices.find((device) => device.id === deviceId) || null;
     state.liveLatest = null;
@@ -1929,6 +1958,8 @@
     } catch (error) {
       // Ignore.
     }
+    ++state.profileGeneration;
+    ++state.historyGeneration;
     localStorage.removeItem(LS_TOKEN);
     localStorage.removeItem(LS_DEVICE);
     state.token = "";

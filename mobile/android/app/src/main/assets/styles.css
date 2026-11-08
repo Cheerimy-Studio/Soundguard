@@ -1060,3 +1060,11 @@ body.war-mode .badge.ok {color:#92400e;background:#fef3c7;}
 .war-ranks strong {font-variant-numeric:tabular-nums;color:var(--amber);}
 .war-ranks li.muted {justify-content:center;color:var(--muted);font-size:13px;border-bottom:0;}
 body.war-mode .war-ranks .rank-no {background:#fff3c4;color:#92400e;}
+
+/* Match the collector and web console controls. */
+:root { --bg:#f4f6f8; --text:#172033; --muted:#617187; --line:#e5e9ef; --teal:#0d7a82; --teal-soft:#e6f4f5; }
+button:focus-visible, select:focus-visible { outline:3px solid #82bdc0; outline-offset:3px; }
+input, select { min-height:44px; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration:.01ms !important; transition-duration:.01ms !important; }
+}

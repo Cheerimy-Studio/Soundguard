@@ -712,30 +712,38 @@ pub struct NotificationUpdate {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceSettingsUpdate {
-    #[serde(default)]
-    pub threshold_db: Option<f64>,
-    #[serde(default)]
-    pub alert_cooldown_secs: Option<u64>,
-    #[serde(default)]
-    pub offline_timeout_secs: Option<u64>,
-    #[serde(default)]
-    pub auto_record_evidence: Option<bool>,
-    #[serde(default)]
-    pub capture_start: Option<String>,
-    #[serde(default)]
-    pub capture_end: Option<String>,
+    #[serde(default, deserialize_with = "present_option")]
+    pub threshold_db: Option<Option<f64>>,
+    #[serde(default, deserialize_with = "present_option")]
+    pub alert_cooldown_secs: Option<Option<u64>>,
+    #[serde(default, deserialize_with = "present_option")]
+    pub offline_timeout_secs: Option<Option<u64>>,
+    #[serde(default, deserialize_with = "present_option")]
+    pub auto_record_evidence: Option<Option<bool>>,
+    #[serde(default, deserialize_with = "present_option")]
+    pub capture_start: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present_option")]
+    pub capture_end: Option<Option<String>>,
+}
+
+// Serde calls this only for a present field; null explicitly restores inheritance.
+fn present_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 impl DeviceSettingsUpdate {
-    pub fn into_settings(self) -> DeviceSettings {
-        DeviceSettings {
-            threshold_db: self.threshold_db,
-            alert_cooldown_secs: self.alert_cooldown_secs,
-            offline_timeout_secs: self.offline_timeout_secs,
-            auto_record_evidence: self.auto_record_evidence,
-            capture_start: self.capture_start,
-            capture_end: self.capture_end,
-        }
+    pub fn apply_to(self, mut settings: DeviceSettings) -> DeviceSettings {
+        if let Some(value) = self.threshold_db { settings.threshold_db = value; }
+        if let Some(value) = self.alert_cooldown_secs { settings.alert_cooldown_secs = value; }
+        if let Some(value) = self.offline_timeout_secs { settings.offline_timeout_secs = value; }
+        if let Some(value) = self.auto_record_evidence { settings.auto_record_evidence = value; }
+        if let Some(value) = self.capture_start { settings.capture_start = value; }
+        if let Some(value) = self.capture_end { settings.capture_end = value; }
+        settings
     }
 }
 
@@ -1030,6 +1038,8 @@ pub struct CreateDeviceResponse {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateDeviceRequest {
     pub name: String,
+    #[serde(default)]
+    pub settings: Option<DeviceSettingsUpdate>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1123,5 +1133,27 @@ mod tests {
                 "assigned@example.com".to_string(),
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod policy_patch_tests {
+    use super::*;
+    #[test]
+    fn missing_policy_fields_are_preserved_and_null_restores_inheritance() {
+        let original = DeviceSettings {
+            threshold_db: Some(55.0), capture_start: Some("08:00".into()),
+            capture_end: Some("18:00".into()), ..Default::default()
+        };
+        let patch: DeviceSettingsUpdate = serde_json::from_str(r#"{"thresholdDb":60}"#).unwrap();
+        let result = patch.apply_to(original.clone());
+        assert_eq!(result.threshold_db, Some(60.0));
+        assert_eq!(result.capture_start.as_deref(), Some("08:00"));
+        let patch: DeviceSettingsUpdate = serde_json::from_str(r#"{"captureStart":null,"captureEnd":null}"#).unwrap();
+        assert!(patch.capture_start.is_some());
+        let result = patch.apply_to(original);
+        assert_eq!(result.threshold_db, Some(55.0));
+        assert_eq!(result.capture_start, None);
+        assert_eq!(result.capture_end, None);
     }
 }

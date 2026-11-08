@@ -75,9 +75,10 @@ sudo systemctl restart soundguard
 ## 用户与权限
 
 - **超级管理员**：管理所有设备、全局策略、日报、邮件、通知和后台用户。
-- **设备管理员**：只能查看、控制、新增并管理分配给自己的设备（可轮换令牌、删除设备），不能修改全局设置或管理用户。
+- **运营管理员**：管理全部设备、令牌、设备计划和常规全局策略；可查看用户，不能修改账号权限、全局采集计划、密钥、固定密码、留存和服务端升级。
+- **设备管理员**：查看、控制和对讲已分配的设备，可调整设备阈值、冷却、离线判定与取证开关；不能接入、改名、移除设备或修改采集计划。
 
-在管理端「用户管理」中创建账号并勾选可管理的设备。用户名和密码使用 Argon2 哈希存储。
+在管理端「用户管理」中创建账号并勾选可管理的设备。密码使用 Argon2 哈希保存。
 
 ## 原生 HTTPS
 
@@ -141,8 +142,8 @@ sudo ufw allow 8080/tcp
 
 ## Windows 采集端与安卓端
 
-- Windows 采集端使用 `dist/soundguard-client-native.exe` 或客户端安装包 `dist/soundguard-client-setup-0.2.6.exe`，服务器地址填 Linux 服务器的局域网 IP 或 HTTPS 域名。
-- 安卓端使用 `dist/soundguard-android-0.1.0.apk`，首次启动先检测服务器连接，再输入用户名和密码。
+- Windows 采集端使用 `dist/soundguard-client-native.exe` 或客户端安装包 `dist/soundguard-client-setup-0.2.7.exe`，服务器地址填 Linux 服务器的局域网 IP 或 HTTPS 域名。
+- 安卓端使用 `dist/soundguard-android-0.2.7.apk`，首次启动先检测服务器连接，再输入用户名和密码。
 - 设备令牌在管理端「设备连接」中添加设备时生成一次，填入 Windows 客户端设置。
 
 ## 排查

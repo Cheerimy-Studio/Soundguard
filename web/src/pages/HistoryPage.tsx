@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { graphic } from "echarts";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { graphic } from "echarts/core";
 import type { EChartsOption } from "echarts";
 import {
   Activity,
@@ -32,6 +32,7 @@ interface HistoryPageProps {
 }
 
 export function HistoryPage({ threshold, deviceId, onNotify }: HistoryPageProps) {
+  const requestGeneration = useRef(0);
   const [range, setRange] = useState<RangeKey>("24h");
   const [data, setData] = useState<ReadingsResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -44,18 +45,23 @@ export function HistoryPage({ threshold, deviceId, onNotify }: HistoryPageProps)
   const load = useCallback(
     async (key: RangeKey) => {
       const current = RANGES.find((item) => item.key === key) ?? RANGES[0];
+      const generation = ++requestGeneration.current;
       setLoading(true);
+      setData(null);
+      setUpdatedAt(null);
       setError("");
       try {
         const to = new Date();
         const from = new Date(to.getTime() - current.hours * 3600 * 1000);
         const result = await api.readings(from, to, deviceId, current.maxPoints);
+        if (generation !== requestGeneration.current) return;
         setData(result);
         setUpdatedAt(new Date());
       } catch (err) {
+        if (generation !== requestGeneration.current) return;
         setError(err instanceof Error ? err.message : "加载历史数据失败");
       } finally {
-        setLoading(false);
+        if (generation === requestGeneration.current) setLoading(false);
       }
     },
     [deviceId],
@@ -63,6 +69,7 @@ export function HistoryPage({ threshold, deviceId, onNotify }: HistoryPageProps)
 
   useEffect(() => {
     void load(range);
+    return () => { ++requestGeneration.current; };
   }, [load, range]);
 
   const chartOption = useMemo<EChartsOption>(() => {

@@ -16,6 +16,7 @@ import {
 import { effectiveSettings } from "./lib/settings";
 import { api, adminWebSocketUrl, clearToken, getToken } from "./api";
 import { Login } from "./components/Login";
+import { AccountDialog } from "./components/AccountDialog";
 import { CallDock } from "./components/Intercom";
 import { OverviewPage } from "./pages/OverviewPage";
 import { HistoryPage } from "./pages/HistoryPage";
@@ -82,6 +83,8 @@ function mergeDevice(list: Device[], device: Device): Device[] {
 
 export default function App() {
   const [token, setTokenState] = useState<string | null>(() => getToken());
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [switching, setSwitching] = useState(false);
   const [page, setPage] = useState<PageKey>("overview");
   const [overview, setOverview] = useState<Overview | null>(null);
   const [alerts, setAlerts] = useState<Alert[]>([]);
@@ -171,10 +174,12 @@ export default function App() {
     async (deviceId: string | null) => {
       const generation = ++loadGeneration.current;
       const sessionToken = getToken();
+      const requestedDevice = deviceId;
       let next: Overview;
       try {
         next = await api.overview(deviceId);
       } catch (error) {
+        if (generation !== loadGeneration.current || sessionToken !== getToken()) return;
         if (
           deviceId &&
           error instanceof Error &&
@@ -188,7 +193,8 @@ export default function App() {
           throw error;
         }
       }
-      if (generation !== loadGeneration.current || sessionToken !== getToken()) return;
+      if (generation !== loadGeneration.current || sessionToken !== getToken()
+        || (requestedDevice && selectedRef.current !== requestedDevice && selectedRef.current !== null)) return;
       applyLoadedOverview(next);
       const now = new Date();
       const [nextAlerts, readings] = await Promise.all([
@@ -219,8 +225,15 @@ export default function App() {
       setAlerts([]);
       setLiveReadings([]);
       lastReadingRef.current = null;
+      setSwitching(true);
       void loadForDevice(deviceId).catch((error) => {
+        if (selectedRef.current !== deviceId) return;
+        selectedRef.current = overviewRef.current?.device.id ?? null;
+        setSelectedDeviceId(selectedRef.current);
+        if (selectedRef.current) localStorage.setItem("soundguard.deviceId", selectedRef.current);
         notify(error instanceof Error ? error.message : "切换设备失败", "error");
+      }).finally(() => {
+        if (selectedRef.current === deviceId || selectedRef.current === overviewRef.current?.device.id) setSwitching(false);
       });
     },
     [intercom, loadForDevice, notify],
@@ -273,6 +286,7 @@ export default function App() {
               device: nextSelected ?? previous.device,
               settings: nextSelected ? effectiveSettings(message.data.settings, nextSelected) : previous.settings,
               serverTime: message.data.serverTime,
+              serverUtcOffsetSecs: message.data.serverUtcOffsetSecs ?? previous.serverUtcOffsetSecs,
             };
             overviewRef.current = next;
             return next;
@@ -421,6 +435,7 @@ export default function App() {
               ...previous,
               devices: message.data,
               device: nextDevice,
+              settings: effectiveSettings(globalSettingsRef.current ?? previous.settings, nextDevice),
             };
             overviewRef.current = next;
             return next;
@@ -452,6 +467,10 @@ export default function App() {
       overviewRef.current = null;
       setWsConnected(false);
       setTokenState(null);
+      setAccountOpen(false);
+      setSwitching(false);
+      setCurrentUser(null);
+      bootstrappedRef.current = false;
       setOverview(null);
       setAlerts([]);
       setLiveReadings([]);
@@ -614,6 +633,9 @@ export default function App() {
     ++loadGeneration.current;
     intercom.hangup();
     clearToken();
+    setAccountOpen(false);
+    setSwitching(false);
+    bootstrappedRef.current = false;
     overviewRef.current = null;
     setWsConnected(false);
     setTokenState(null);
@@ -644,7 +666,7 @@ export default function App() {
           overviewRef.current = next;
           return next;
         });
-        notify(monitoring ? "已下发恢复采集指令" : "已下暂停采集指令", "success");
+        notify(monitoring ? "已下发恢复采集指令" : "已下发暂停采集指令", "success");
       } catch (error) {
         notify(error instanceof Error ? error.message : "操作失败", "error");
         throw error;
@@ -828,10 +850,10 @@ export default function App() {
           </div>
           <div className="topbar-right">
             {currentUser && (
-              <div className="account-chip" title={currentUser.role === "super_admin" ? "超级管理员" : currentUser.role === "update_admin" ? "运营管理员" : "设备管理员"}>
+              <button type="button" onClick={() => setAccountOpen(true)} className="account-chip" aria-label="账号与密码" title={currentUser.role === "super_admin" ? "超级管理员" : currentUser.role === "update_admin" ? "运营管理员" : "设备管理员"}>
                 <UsersRound size={14} />
                 <span>{currentUser.username}</span>
-              </div>
+              </button>
             )}
             <div className="device-switcher">
               <Server size={14} />
@@ -895,7 +917,8 @@ export default function App() {
           </div>
         )}
 
-        <main className="page-content">
+        {switching && <div className="device-loading" role="status"><RefreshCw size={15} className="spin" />正在切换设备…</div>}
+        <main className="page-content" inert={switching}>
           {page === "overview" && (
             <OverviewPage
               overview={overview}
@@ -910,14 +933,14 @@ export default function App() {
             />
           )}
           {page === "history" && (
-            <HistoryPage
+            <HistoryPage key={overview.device.id}
               threshold={overview.settings.thresholdDb}
               deviceId={overview.device.id}
               onNotify={notify}
             />
           )}
           {page === "alerts" && (
-            <AlertsPage
+            <AlertsPage key={overview.device.id}
               alerts={alerts}
               onAcknowledge={handleAcknowledge}
               onNotify={notify}
@@ -976,6 +999,12 @@ export default function App() {
       </div>
 
       <CallDock controller={intercom} deviceName={overview.device.name} />
+
+      {accountOpen && currentUser && <AccountDialog user={currentUser}
+        onClose={() => setAccountOpen(false)} onChanged={() => {
+          handleLogout();
+          notify("密码已修改，请使用新密码登录", "success");
+        }} />}
 
       {toast && (
         <div className={`toast toast-${toast.tone}`} key={toast.id}>

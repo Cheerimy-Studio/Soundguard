@@ -7,6 +7,7 @@ import type {
   CreateCallPayload,
   CreatedDevice,
   Device,
+  DeviceSettings,
   DeviceControlResponse,
   DeviceTokenResponse,
   HealthResponse,
@@ -129,6 +130,10 @@ export const api = {
     });
   },
 
+  changePassword(currentPassword: string, newPassword: string): Promise<{ ok: boolean }> {
+    return request("/auth/password", { method: "POST", body: JSON.stringify({ currentPassword, newPassword }) });
+  },
+
   me(): Promise<User> {
     return request<User>("/auth/me");
   },
@@ -175,8 +180,8 @@ export const api = {
       alertCooldownSecs: number | null;
       offlineTimeoutSecs: number | null;
       autoRecordEvidence: boolean | null;
-      captureStart: string | null;
-      captureEnd: string | null;
+      captureStart?: string | null;
+      captureEnd?: string | null;
     },
   ): Promise<Device> {
     return request<Device>(`/devices/${encodeURIComponent(id)}/settings`, {
@@ -210,7 +215,7 @@ export const api = {
 
   updateDevice(
     id: string,
-    payload: { name: string },
+    payload: { name: string; settings?: Partial<DeviceSettings> },
   ): Promise<Device> {
     return request<Device>(`/devices/${encodeURIComponent(id)}`, {
       method: "PUT",
@@ -283,7 +288,7 @@ export const api = {
     return request<UpdateCheck>("/update/check");
   },
 
-  applyUpdate(): Promise<{ ok: boolean; message: string; newVersion?: string }> {
+  applyUpdate(): Promise<{ ok: boolean; message: string; newVersion?: string; restartRequired?: boolean }> {
     return request("/update/apply", { method: "POST", body: JSON.stringify({}) });
   },
 

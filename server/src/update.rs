@@ -5,6 +5,10 @@
 //! replace the server binary with an atomic swap.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+static UPDATE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+const MAX_BINARY_BYTES: usize = 128 * 1024 * 1024;
 
 pub const GITHUB_REPO: &str = "Cheerimy-Studio/Soundguard";
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -32,6 +36,10 @@ pub struct UpdateAssets {
     pub linux_x86_64: String,
     #[serde(default)]
     pub windows_server: String,
+    #[serde(default)]
+    pub linux_sha256: String,
+    #[serde(default)]
+    pub windows_sha256: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -55,6 +63,8 @@ struct GitHubAsset {
     name: String,
     #[serde(default)]
     browser_download_url: String,
+    #[serde(default)]
+    digest: Option<String>,
 }
 
 pub async fn check_github() -> Result<UpdateCheck, String> {
@@ -86,9 +96,23 @@ pub async fn check_github() -> Result<UpdateCheck, String> {
         match asset.name.as_str() {
             "soundguard-server-linux-x86_64" => {
                 assets.linux_x86_64 = asset.browser_download_url.clone();
+                assets.linux_sha256 = asset
+                    .digest
+                    .as_deref()
+                    .unwrap_or_default()
+                    .strip_prefix("sha256:")
+                    .unwrap_or_default()
+                    .to_string();
             }
             "soundguard-server.exe" => {
                 assets.windows_server = asset.browser_download_url.clone();
+                assets.windows_sha256 = asset
+                    .digest
+                    .as_deref()
+                    .unwrap_or_default()
+                    .strip_prefix("sha256:")
+                    .unwrap_or_default()
+                    .to_string();
             }
             _ => {}
         }
@@ -126,12 +150,21 @@ fn version_lt(current: &str, latest: &str) -> bool {
 /// Download the new binary and atomically replace the current executable.
 /// Returns Ok(()) when the swap succeeded; the caller should then exit(0)
 /// and let systemd/restart the process.
-pub async fn apply_update(asset_url: &str) -> Result<(), String> {
+pub async fn apply_update(asset_url: &str, expected_sha256: &str) -> Result<(), String> {
+    let _guard = UPDATE_LOCK.try_lock().map_err(|_| "更新正在进行，请稍后查看版本")?;
+    if expected_sha256.len() != 64 || !expected_sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("发布文件缺少有效的 SHA-256 校验值，请手动更新".to_string());
+    }
+    let url = reqwest::Url::parse(asset_url).map_err(|_| "更新地址无效")?;
+    if url.scheme() != "https" || url.host_str() != Some("github.com")
+        || !url.path().starts_with(&format!("/{GITHUB_REPO}/releases/download/")) {
+        return Err("更新地址不属于项目发布目录".to_string());
+    }
     if asset_url.is_empty() {
         return Err("该平台暂无可用的更新包".to_string());
     }
 
-    let response = reqwest::Client::new()
+    let mut response = reqwest::Client::new()
         .get(asset_url)
         .timeout(std::time::Duration::from_secs(600))
         .send()
@@ -142,14 +175,17 @@ pub async fn apply_update(asset_url: &str) -> Result<(), String> {
         return Err(format!("下载更新失败: HTTP {}", response.status()));
     }
 
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| format!("读取下载数据失败: {e}"))?;
-
-    if bytes.is_empty() || bytes.len() < 1024 {
-        return Err("下载的文件过小，可能是无效更新包".to_string());
+    if response.content_length().is_some_and(|size| size > MAX_BINARY_BYTES as u64) {
+        return Err("更新包超过大小限制".to_string());
     }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| format!("读取下载数据失败: {e}"))? {
+        if bytes.len() + chunk.len() > MAX_BINARY_BYTES {
+            return Err("更新包超过大小限制".to_string());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    verify_binary(&bytes, expected_sha256)?;
 
     let current = std::env::current_exe().map_err(|e| format!("无法定位当前程序: {e}"))?;
     let parent = current
@@ -186,4 +222,38 @@ pub async fn apply_update(asset_url: &str) -> Result<(), String> {
 
     tracing::info!("Server binary updated to latest release");
     Ok(())
+}
+
+fn verify_binary(bytes: &[u8], expected_sha256: &str) -> Result<(), String> {
+    if bytes.len() < 1024 { return Err("下载的文件过小，可能是无效更新包".into()); }
+    let actual = format!("{:x}", Sha256::digest(bytes));
+    if !actual.eq_ignore_ascii_case(expected_sha256) {
+        return Err("更新文件校验失败，当前程序未替换".into());
+    }
+    #[cfg(target_os = "linux")]
+    if !bytes.starts_with(b"\x7fELF") { return Err("更新文件不是 Linux 可执行程序".into()); }
+    #[cfg(windows)]
+    if !bytes.starts_with(b"MZ") { return Err("更新文件不是 Windows 可执行程序".into()); }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn corrupted_or_non_executable_updates_are_rejected() {
+        let mut bytes = vec![0; 2048];
+        #[cfg(target_os = "linux")]
+        bytes[..4].copy_from_slice(b"\x7fELF");
+        #[cfg(windows)]
+        bytes[..2].copy_from_slice(b"MZ");
+        let hash = format!("{:x}", Sha256::digest(&bytes));
+        assert!(verify_binary(&bytes, &hash).is_ok());
+        bytes[100] ^= 1;
+        assert!(verify_binary(&bytes, &hash).is_err());
+        let html = vec![b'x'; 2048];
+        let hash = format!("{:x}", Sha256::digest(&html));
+        assert!(verify_binary(&html, &hash).is_err());
+        assert!(verify_binary(b"short", &hash).is_err());
+    }
 }
