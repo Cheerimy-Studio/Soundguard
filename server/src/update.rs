@@ -155,13 +155,13 @@ pub async fn apply_update(asset_url: &str, expected_sha256: &str) -> Result<(), 
     if expected_sha256.len() != 64 || !expected_sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("发布文件缺少有效的 SHA-256 校验值，请手动更新".to_string());
     }
+    if asset_url.is_empty() {
+        return Err("该平台暂无可用的更新包".to_string());
+    }
     let url = reqwest::Url::parse(asset_url).map_err(|_| "更新地址无效")?;
     if url.scheme() != "https" || url.host_str() != Some("github.com")
         || !url.path().starts_with(&format!("/{GITHUB_REPO}/releases/download/")) {
         return Err("更新地址不属于项目发布目录".to_string());
-    }
-    if asset_url.is_empty() {
-        return Err("该平台暂无可用的更新包".to_string());
     }
 
     let mut response = reqwest::Client::new()

@@ -115,21 +115,30 @@ export function DevicesPage({
     setBusy(true);
     setFormError("");
     try {
-      await api.updateDevice(edit.device.id, {
-        name: edit.name.trim(),
-        settings: {
-          thresholdDb: optionalNumber(edit.thresholdDb),
-          alertCooldownSecs: optionalNumber(edit.alertCooldownSecs),
-          offlineTimeoutSecs: optionalNumber(edit.offlineTimeoutSecs),
-          autoRecordEvidence:
-            edit.autoRecordEvidence === "" ? null : edit.autoRecordEvidence === "true",
-          captureStart: edit.followSchedule ? null : edit.captureStart,
-          captureEnd: edit.followSchedule ? null : edit.captureEnd,
-        },
-      });
+      const policy = {
+        thresholdDb: optionalNumber(edit.thresholdDb),
+        alertCooldownSecs: optionalNumber(edit.alertCooldownSecs),
+        offlineTimeoutSecs: optionalNumber(edit.offlineTimeoutSecs),
+        autoRecordEvidence:
+          edit.autoRecordEvidence === "" ? null : edit.autoRecordEvidence === "true",
+      };
+      if (canManage) {
+        await api.updateDevice(edit.device.id, {
+          name: edit.name.trim(),
+          settings: {
+            ...policy,
+            captureStart: edit.followSchedule ? null : edit.captureStart,
+            captureEnd: edit.followSchedule ? null : edit.captureEnd,
+          },
+        });
+      } else {
+        // Device administrators may tune policy fields only; name and capture
+        // schedule remain protected by the server.
+        await api.updateDeviceSettings(edit.device.id, policy);
+      }
       setEdit(null);
       await onDevicesUpdated();
-      onNotify("设备信息与独立策略已更新", "success");
+      onNotify(canManage ? "设备信息与独立策略已更新" : "设备独立策略已更新", "success");
     } catch (error) {
       setFormError(error instanceof Error ? error.message : "更新设备失败");
     } finally {
@@ -295,7 +304,7 @@ export function DevicesPage({
                   <ArrowRightLeft size={14} />
                   {selected ? "正在查看" : "切换到此设备"}
                 </button>
-                {canManage && <button
+                <button
                   type="button"
                   className="ghost-button small"
                   onClick={() => {
@@ -319,8 +328,8 @@ export function DevicesPage({
                   }}
                 >
                   <Edit3 size={14} />
-                  编辑
-                </button>}
+                  {canManage ? "编辑" : "调整策略"}
+                </button>
                 {canManage && (
                   <>
                     <button
@@ -470,14 +479,14 @@ export function DevicesPage({
           <form className="modal-panel access-modal" onSubmit={saveEdit}>
             <div className="modal-panel-head">
               <div>
-                <div className="eyebrow">编辑设备</div>
-                <h2>编辑设备信息</h2>
+                <div className="eyebrow">{canManage ? "编辑设备" : "设备策略"}</div>
+                <h2>{canManage ? "编辑设备信息" : "调整设备策略"}</h2>
               </div>
               <button type="button" className="icon-button ghost" disabled={busy} onClick={() => setEdit(null)} aria-label="关闭">
                 <X size={17} />
               </button>
             </div>
-            <label className="form-field">
+            {canManage && <label className="form-field">
               <span>设备名称</span>
               <input
                 value={edit.name}
@@ -485,7 +494,7 @@ export function DevicesPage({
                 maxLength={60}
                 required
               />
-            </label>
+            </label>}
             <div className="device-policy-head">
               <div>
                 <strong>设备独立策略</strong>
@@ -546,7 +555,7 @@ export function DevicesPage({
                 </select>
               </label>
             </div>
-            <div className="device-schedule-block">
+            {canManage && <div className="device-schedule-block">
               <label className="check-row">
                 <input type="checkbox" checked={edit.followSchedule}
                   onChange={(event) => setEdit({ ...edit, followSchedule: event.target.checked })} />
@@ -559,13 +568,13 @@ export function DevicesPage({
                   onChange={(event) => setEdit({ ...edit, captureEnd: event.target.value })} /></label>
               </div>}
               <small>两端留空或相同表示全天；开始晚于结束表示跨夜。</small>
-            </div>
+            </div>}
             {formError && <div className="form-error">{formError}</div>}
             <div className="modal-actions">
               <button type="button" className="ghost-button" disabled={busy} onClick={() => setEdit(null)}>取消</button>
-              <button type="submit" className="primary-button" disabled={busy || !edit.name.trim()}>
+              <button type="submit" className="primary-button" disabled={busy || (canManage && !edit.name.trim())}>
                 {busy ? <LoaderCircle size={15} className="spin" /> : <Edit3 size={15} />}
-                保存
+                {canManage ? "保存" : "保存策略"}
               </button>
             </div>
           </form>

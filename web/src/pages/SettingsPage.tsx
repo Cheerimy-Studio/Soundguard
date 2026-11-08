@@ -40,6 +40,50 @@ interface SettingsPageProps {
   onNotify: (message: string, tone?: "success" | "error" | "info") => void;
 }
 
+const STUN_PRESETS: Record<string, { urls: string }[]> = {
+  domestic: [
+    { urls: "stun:stun.qq.com:3478" },
+    { urls: "stun:stun.miwifi.com:3478" },
+    { urls: "stun:stun.chat.bilibili.com:3478" },
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun.cloudflare.com:3478" },
+  ],
+  international: [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun.cloudflare.com:3478" },
+    { urls: "stun:stun.nextcloud.com:443" },
+  ],
+  all: [
+    { urls: "stun:stun.qq.com:3478" },
+    { urls: "stun:stun.miwifi.com:3478" },
+    { urls: "stun:stun.chat.bilibili.com:3478" },
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun.cloudflare.com:3478" },
+    { urls: "stun:stun.nextcloud.com:443" },
+  ],
+};
+
+function iceUrls(list: unknown): string[] {
+  if (!Array.isArray(list)) return [];
+  return list.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const urls = (item as { urls?: unknown }).urls;
+    if (typeof urls === "string") return [urls];
+    if (Array.isArray(urls)) return urls.filter((url): url is string => typeof url === "string");
+    return [];
+  });
+}
+
+function detectStunPreset(list: unknown): string {
+  const urls = iceUrls(list);
+  for (const [key, preset] of Object.entries(STUN_PRESETS)) {
+    if (urls.length === preset.length && preset.every((item, index) => item.urls === urls[index])) {
+      return key;
+    }
+  }
+  return "custom";
+}
+
 type PolicyFollow = {
   thresholdDb: boolean;
   alertCooldownSecs: boolean;
@@ -105,7 +149,9 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
     policyFromDevice(overview.settings, overview.devices.find((d) => d.id === (deviceId || overview.device.id))?.settings),
   );
   const [policySaving, setPolicySaving] = useState(false);
-  const [stunPreset, setStunPreset] = useState("domestic");
+  const [stunPreset, setStunPreset] = useState(() =>
+    detectStunPreset(overview.settings.iceServers),
+  );
   const policyEditing=useRef(false);
   const policyBound=useRef(policyDeviceId);
   const [nvidiaConfigured, setNvidiaConfigured] = useState<boolean | null>(null);
@@ -163,6 +209,7 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
         if (cancelled) return;
         setBaseline(result.settings);
         setForm(result.settings);
+        setStunPreset(detectStunPreset(result.settings.iceServers));
         setAlertEmails(result.settings.alertRecipients.join(", "));
         setReportEmails(result.settings.reportRecipients.join(", "));
       })
@@ -189,6 +236,7 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
 
   function reset() {
     setForm(baseline);
+    setStunPreset(detectStunPreset(baseline.iceServers));
     setAlertEmails(baseline.alertRecipients.join(", "));
     setReportEmails(baseline.reportRecipients.join(", "));
     setFormError("");
@@ -212,6 +260,7 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
       });
       setBaseline(saved);
       setForm(saved);
+      setStunPreset(detectStunPreset(saved.iceServers));
       setAlertEmails(saved.alertRecipients.join(", "));
       setReportEmails(saved.reportRecipients.join(", "));
     } catch (error) {
@@ -396,7 +445,7 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
         {isSuper && <a href="#schedule-policy">计划任务</a>}
         {canConfigure && <a href="#stun-policy">STUN 服务器</a>}
         {isSuper && <a href="#password-policy">操作保护</a>}
-        <span>{canConfigure ? "全局策略对所有客户端生效" : "仅可修改已分配设备的独立策略"}</span>
+        <span>{canConfigure ? "全局策略对所有客户端生效" : "仅可修改已分配设备的独立策略，请在“设备接入”中调整"}</span>
       </nav>
       {formError && (
         <div className="settings-error">
@@ -1075,29 +1124,8 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
                   onChange={(event) => {
                     const preset = event.target.value;
                     setStunPreset(preset);
-                    if (preset === "domestic") {
-                      update("iceServers", [
-                        { urls: "stun:stun.qq.com:3478" },
-                        { urls: "stun:stun.miwifi.com:3478" },
-                        { urls: "stun:stun.chat.bilibili.com:3478" },
-                        { urls: "stun:stun.l.google.com:19302" },
-                        { urls: "stun:stun.cloudflare.com:3478" },
-                      ]);
-                    } else if (preset === "international") {
-                      update("iceServers", [
-                        { urls: "stun:stun.l.google.com:19302" },
-                        { urls: "stun:stun.cloudflare.com:3478" },
-                        { urls: "stun:stun.nextcloud.com:443" },
-                      ]);
-                    } else if (preset === "all") {
-                      update("iceServers", [
-                        { urls: "stun:stun.qq.com:3478" },
-                        { urls: "stun:stun.miwifi.com:3478" },
-                        { urls: "stun:stun.chat.bilibili.com:3478" },
-                        { urls: "stun:stun.l.google.com:19302" },
-                        { urls: "stun:stun.cloudflare.com:3478" },
-                        { urls: "stun:stun.nextcloud.com:443" },
-                      ]);
+                    if (STUN_PRESETS[preset]) {
+                      update("iceServers", STUN_PRESETS[preset].map((item) => ({ ...item })));
                     }
                   }}
                 >

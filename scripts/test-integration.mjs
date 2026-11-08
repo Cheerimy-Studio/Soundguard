@@ -37,13 +37,22 @@ async function start() {
   throw new Error(`Server did not start: ${log}`);
 }
 async function stop() {
-  if (!child || child.exitCode !== null) return;
-  for (const ws of sockets) ws.close();
+  for (const ws of sockets) {
+    try { ws.close(); } catch { /* already closed */ }
+  }
+  // A signal-terminated child has signalCode set but exitCode null; waiting for
+  // its (already emitted) exit event would hang the test runner.
+  if (!child || child.exitCode !== null || child.signalCode !== null) {
+    child = undefined;
+    return;
+  }
   const stopping = child;
-  const exited = new Promise(r => stopping.once('exit', r));
+  child = undefined;
+  const exited = new Promise((resolve) => stopping.once('exit', resolve));
   const timer = setTimeout(() => stopping.kill('SIGKILL'), 6000);
   stopping.kill(process.platform === 'win32' ? 'SIGINT' : 'SIGTERM');
-  await exited; clearTimeout(timer);
+  await exited;
+  clearTimeout(timer);
 }
 async function req(path, { token, deviceToken, body, method, status = 200 } = {}) {
   const headers = { 'Content-Type': 'application/json' };

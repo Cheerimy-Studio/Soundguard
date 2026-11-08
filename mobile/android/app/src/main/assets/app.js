@@ -1261,6 +1261,7 @@
 
   async function switchDevice(deviceId) {
     if (!deviceId || deviceId === state.selectedDeviceId) return;
+    const previousId = state.selectedDeviceId;
     if (call.active) {
       await endCall(true, "设备已切换，通话结束");
     }
@@ -1281,6 +1282,16 @@
       await setRange(0);
       toast(`已切换到 ${state.device?.name || "设备"}`);
     } catch (error) {
+      if (state.selectedDeviceId === deviceId) {
+        state.selectedDeviceId = previousId;
+        state.device = state.devices.find((device) => device.id === previousId) || null;
+        state.liveLatest = null;
+        state.points = [];
+        if (previousId) localStorage.setItem(LS_DEVICE, previousId);
+        else localStorage.removeItem(LS_DEVICE);
+        renderDeviceSelect();
+        renderDashboard();
+      }
       toast(error.message || "设备加载失败");
     }
   }
