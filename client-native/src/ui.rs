@@ -117,6 +117,7 @@ enum Icon {
     Calls,
     Mic,
     Link,
+    Lock,
 }
 fn draw_icon(p: &egui::Painter, rect: Rect, icon: Icon, color: C) {
     let o = rect.center();
@@ -140,6 +141,21 @@ fn draw_icon(p: &egui::Painter, rect: Rect, icon: Icon, color: C) {
             p.rect_stroke(Rect::from_center_size(o, vec2(13.0, 14.0)), 3.0, stroke);
             line([-4.0, -2.0], [4.0, -2.0]);
             line([-4.0, 2.0], [2.0, 2.0]);
+        }
+        Icon::Lock => {
+            p.rect_stroke(
+                Rect::from_center_size(o + vec2(0.0, 4.0), vec2(13.0, 9.0)),
+                2.0,
+                stroke,
+            );
+            let mut arc = Vec::new();
+            for step in 0..=10 {
+                let angle =
+                    std::f32::consts::PI + step as f32 * std::f32::consts::PI / 10.0;
+                arc.push(o + vec2(4.5 * angle.cos(), -0.5 + 4.5 * angle.sin()));
+            }
+            p.add(egui::Shape::line(arc, stroke));
+            p.circle_filled(o + vec2(0.0, 4.0), 1.1, color);
         }
         Icon::Calls => {
             p.circle_stroke(o, 7.0, stroke);
@@ -349,11 +365,11 @@ impl eframe::App for SoundGuardApp {
             }
         }
         if self.exiting && !self.status.exit_ready {
-            egui::Window::new("正在关闭")
+            egui::Window::new("正在退出")
                 .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
                 .collapsible(false)
                 .show(ctx, |ui| {
-                    ui.label("正在结束通话并提交关闭审计…");
+                    ui.label("正在结束通话并提交退出审计…");
                 });
         }
         if self.frames == 15 && self.screenshot.is_some() {
@@ -489,7 +505,7 @@ impl SoundGuardApp {
                                 field(ui, "本地密码", &mut self.setup_password, true);
                                 field(ui, "确认密码", &mut self.setup_confirm, true);
                                 ui.label(
-                                    R::new("本地密码用于打开设置、关闭自动接听和关闭客户端，只保存在本机。")
+                                    R::new("本地密码用于打开设置、关闭自动接听和退出客户端，只保存在本机。")
                                         .size(12.0)
                                         .color(MUTED),
                                 );
@@ -549,7 +565,7 @@ impl SoundGuardApp {
                                 .stroke(Stroke::new(1.0_f32, BORDER))
                                 .rounding(8.0),
                         )
-                        .on_hover_text("关闭")
+                        .on_hover_text("退出")
                         .clicked()
                     {
                         self.request_exit();
@@ -1254,75 +1270,93 @@ impl SoundGuardApp {
         });
     }
     fn auth_modal(&mut self, ctx: &egui::Context, action: Action) {
-        egui::Window::new(if action == Action::Exit {
-            "关闭客户端"
+        let exiting = action == Action::Exit;
+        let title = if exiting { "退出确认" } else { "设置验证" };
+        let subtitle = if exiting {
+            "退出后将停止采集、对讲和告警上报。"
         } else {
-            "管理员验证"
-        })
-        .order(egui::Order::Foreground)
-        .title_bar(false)
-        .movable(false)
-        .frame(card().inner_margin(24.0))
-        .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
-        .fixed_size(vec2(400.0, 260.0))
-        .resizable(false)
-        .collapsible(false)
-        .show(ctx, |ui| {
-            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                ui.label(
-                    R::new(if action == Action::Exit {
-                        "关闭客户端 · 安全确认"
-                    } else {
-                        "管理员验证"
-                    })
-                    .size(18.0)
-                    .strong(),
-                );
-                ui.add_space(12.0);
-                ui.label(
-                    R::new(if action == Action::Exit {
-                        "请输入本地密码、管理端固定密码或 6 位动态验证码确认关闭。"
-                    } else {
-                        "请输入本地密码、管理端固定密码或动态验证码以继续。"
-                    })
-                    .size(12.0)
-                    .color(MUTED),
-                );
-                ui.add_space(10.0);
-                let response = ui.add_sized(
-                    [ui.available_width(), 36.0],
-                    egui::TextEdit::singleline(&mut self.auth_input)
-                        .password(true)
-                        .hint_text("密码或 6 位动态验证码"),
-                );
-                if self.auth_input.is_empty() {
-                    response.request_focus();
-                }
-                if !self.auth_error.is_empty() {
-                    ui.colored_label(RED, &self.auth_error);
-                }
-                let busy = self.auth_worker.is_some() || self.auth_pending.is_some();
-                ui.add_space(12.0);
-                ui.add_enabled_ui(!busy, |ui| {
+            "打开客户端设置前需要验证身份。"
+        };
+        egui::Window::new(title)
+            .order(egui::Order::Foreground)
+            .title_bar(false)
+            .movable(false)
+            .frame(card().inner_margin(24.0))
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .fixed_size(vec2(420.0, 276.0))
+            .resizable(false)
+            .collapsible(false)
+            .show(ctx, |ui| {
+                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                     ui.horizontal(|ui| {
-                        if button(ui, "取消", false).clicked() {
-                            self.auth = None;
-                            self.auth_input.clear();
-                        }
-                        if button(ui, if action == Action::Exit { "确认关闭" } else { "验证" }, true)
-                            .clicked()
-                            || response.lost_focus()
-                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                        {
-                            self.verify_auth();
-                        }
+                        let (rect, _) =
+                            ui.allocate_exact_size(vec2(44.0, 44.0), egui::Sense::hover());
+                        ui.painter()
+                            .rect_filled(rect, 13.0, C::from_rgb(230, 245, 243));
+                        draw_icon(ui.painter(), rect.shrink(12.0), Icon::Lock, TEAL);
+                        ui.add_space(4.0);
+                        ui.vertical(|ui| {
+                            ui.label(R::new(title).size(20.0).strong().color(TEXT));
+                            ui.label(R::new(subtitle).size(11.5).color(MUTED));
+                        });
                     });
+                    ui.add_space(18.0);
+                    ui.label(
+                        R::new(if exiting {
+                            "请输入本地密码、管理端固定密码或 6 位动态验证码确认退出。"
+                        } else {
+                            "请输入本地密码、管理端固定密码或动态验证码以继续。"
+                        })
+                        .size(12.0)
+                        .color(MUTED),
+                    );
+                    ui.add_space(10.0);
+                    let response = ui.add_sized(
+                        [ui.available_width(), 38.0],
+                        egui::TextEdit::singleline(&mut self.auth_input)
+                            .password(true)
+                            .hint_text("密码或 6 位动态验证码"),
+                    );
+                    if self.auth_input.is_empty() {
+                        response.request_focus();
+                    }
+                    if !self.auth_error.is_empty() {
+                        ui.add_space(8.0);
+                        egui::Frame::none()
+                            .fill(C::from_rgb(253, 240, 239))
+                            .rounding(8.0)
+                            .inner_margin(egui::Margin::symmetric(10.0, 7.0))
+                            .show(ui, |ui| {
+                                ui.label(R::new(&self.auth_error).size(11.5).color(RED));
+                            });
+                    }
+                    let busy = self.auth_worker.is_some() || self.auth_pending.is_some();
+                    ui.add_space(16.0);
+                    ui.add_enabled_ui(!busy, |ui| {
+                        ui.allocate_ui_with_layout(
+                            vec2(ui.available_width(), 36.0),
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if button(ui, if exiting { "确认退出" } else { "验证" }, true)
+                                    .clicked()
+                                    || response.lost_focus()
+                                        && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                {
+                                    self.verify_auth();
+                                }
+                                if button(ui, "取消", false).clicked() {
+                                    self.auth = None;
+                                    self.auth_input.clear();
+                                }
+                            },
+                        );
+                    });
+                    if busy {
+                        ui.add_space(6.0);
+                        ui.label(R::new("正在验证…").size(11.0).color(TEAL));
+                    }
                 });
-                if busy {
-                    ui.label("正在验证…");
-                }
             });
-        });
     }
     fn drawer(&mut self, ctx: &egui::Context) {
         egui::Window::new("客户端设置")
@@ -1480,6 +1514,7 @@ impl SoundGuardApp {
                         if !self.error.is_empty() {
                             ui.colored_label(RED, &self.error);
                         }
+                        ui.add_space(16.0);
                     });
                 ui.add_space(12.0);
                 ui.separator();

@@ -42,6 +42,122 @@ pub struct UpdateAssets {
     pub windows_sha256: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateStatus {
+    pub state: String,
+    pub progress: f64,
+    pub downloaded: u64,
+    pub total: u64,
+    pub message: String,
+    pub new_version: String,
+    pub restart_required: bool,
+}
+
+impl Default for UpdateStatus {
+    fn default() -> Self {
+        Self {
+            state: "idle".into(),
+            progress: 0.0,
+            downloaded: 0,
+            total: 0,
+            message: String::new(),
+            new_version: String::new(),
+            restart_required: false,
+        }
+    }
+}
+
+/// Shared state for the asynchronous update job. Long downloads must not be
+/// tied to one HTTP request: reverse proxies (Cloudflare) return 524 when a
+/// request takes more than ~100 seconds.
+pub struct UpdateState {
+    status: tokio::sync::Mutex<UpdateStatus>,
+    pub running: std::sync::atomic::AtomicBool,
+}
+
+impl UpdateState {
+    pub fn new() -> Self {
+        Self {
+            status: tokio::sync::Mutex::new(UpdateStatus::default()),
+            running: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    pub async fn snapshot(&self) -> UpdateStatus {
+        self.status.lock().await.clone()
+    }
+
+    pub async fn set(&self, state: &str, message: impl Into<String>) {
+        let mut status = self.status.lock().await;
+        status.state = state.into();
+        status.message = message.into();
+        if state == "downloading" {
+            status.progress = 0.0;
+            status.downloaded = 0;
+            status.total = 0;
+            status.new_version.clear();
+            status.restart_required = false;
+        }
+    }
+
+    pub async fn progress(&self, downloaded: u64, total: u64) {
+        let mut status = self.status.lock().await;
+        status.state = "downloading".into();
+        status.downloaded = downloaded;
+        status.total = total;
+        status.progress = if total > 0 {
+            (downloaded as f64 / total as f64).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+    }
+
+    pub async fn finish(&self, state: &str, message: impl Into<String>, version: &str, restart_required: bool) {
+        self.running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let mut status = self.status.lock().await;
+        status.state = state.into();
+        status.message = message.into();
+        status.new_version = version.to_string();
+        status.restart_required = restart_required;
+        status.progress = if state == "done" { 1.0 } else { status.progress };
+    }
+}
+
+impl Default for UpdateState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+const DEFAULT_MIRRORS: [&str; 3] = [
+    "https://ghfast.top/",
+    "https://gh-proxy.com/",
+    "https://ghproxy.net/",
+];
+
+/// Mirrors are only used for binary downloads. The expected SHA-256 still comes
+/// from the official GitHub API, so a mirror cannot substitute another binary.
+fn mirror_prefixes() -> Vec<String> {
+    match std::env::var("UPDATE_MIRRORS") {
+        Ok(raw) if raw.trim().eq_ignore_ascii_case("off") => Vec::new(),
+        Ok(raw) if !raw.trim().is_empty() => raw
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(|item| {
+                if item.ends_with('/') {
+                    item.to_string()
+                } else {
+                    format!("{item}/")
+                }
+            })
+            .collect(),
+        _ => DEFAULT_MIRRORS.iter().map(|item| item.to_string()).collect(),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct GitHubRelease {
     tag_name: String,
@@ -147,46 +263,76 @@ fn version_lt(current: &str, latest: &str) -> bool {
     false
 }
 
-/// Download the new binary and atomically replace the current executable.
-/// Returns Ok(()) when the swap succeeded; the caller should then exit(0)
-/// and let systemd/restart the process.
-pub async fn apply_update(asset_url: &str, expected_sha256: &str) -> Result<(), String> {
-    let _guard = UPDATE_LOCK.try_lock().map_err(|_| "更新正在进行，请稍后查看版本")?;
-    if expected_sha256.len() != 64 || !expected_sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err("发布文件缺少有效的 SHA-256 校验值，请手动更新".to_string());
-    }
+/// Validates that the URL comes from this project's GitHub release directory.
+/// Mirror URLs are generated internally from this trusted URL.
+fn validate_asset_url(asset_url: &str) -> Result<reqwest::Url, String> {
     if asset_url.is_empty() {
         return Err("该平台暂无可用的更新包".to_string());
     }
     let url = reqwest::Url::parse(asset_url).map_err(|_| "更新地址无效")?;
-    if url.scheme() != "https" || url.host_str() != Some("github.com")
-        || !url.path().starts_with(&format!("/{GITHUB_REPO}/releases/download/")) {
+    if url.scheme() != "https"
+        || url.host_str() != Some("github.com")
+        || !url
+            .path()
+            .starts_with(&format!("/{GITHUB_REPO}/releases/download/"))
+    {
         return Err("更新地址不属于项目发布目录".to_string());
     }
+    Ok(url)
+}
 
-    let mut response = reqwest::Client::new()
-        .get(asset_url)
-        .timeout(std::time::Duration::from_secs(600))
+fn managed_restart() -> bool {
+    std::env::var_os("INVOCATION_ID").is_some()
+        || std::env::var("SOUNDGUARD_AUTO_RESTART").is_ok_and(|value| value == "1")
+}
+
+async fn download_candidate(
+    client: &reqwest::Client,
+    url: &str,
+    expected_sha256: &str,
+    state: &UpdateState,
+) -> Result<Vec<u8>, String> {
+    let mut response = client
+        .get(url)
+        // Do not let one blocked source hold the job forever; a mirror gets a
+        // turn after this per-source timeout.
+        .timeout(std::time::Duration::from_secs(180))
         .send()
         .await
-        .map_err(|e| format!("下载更新失败: {e}"))?;
-
+        .map_err(|e| format!("连接失败: {e}"))?;
     if !response.status().is_success() {
-        return Err(format!("下载更新失败: HTTP {}", response.status()));
+        return Err(format!("HTTP {}", response.status()));
     }
-
-    if response.content_length().is_some_and(|size| size > MAX_BINARY_BYTES as u64) {
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_BINARY_BYTES as u64)
+    {
         return Err("更新包超过大小限制".to_string());
     }
+    let total = response.content_length().unwrap_or(0);
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|e| format!("读取下载数据失败: {e}"))? {
+    let mut reported = 0u64;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| format!("读取下载数据失败: {e}"))?
+    {
         if bytes.len() + chunk.len() > MAX_BINARY_BYTES {
             return Err("更新包超过大小限制".to_string());
         }
         bytes.extend_from_slice(&chunk);
+        let downloaded = bytes.len() as u64;
+        if downloaded.saturating_sub(reported) >= 256 * 1024 {
+            reported = downloaded;
+            state.progress(downloaded, total).await;
+        }
     }
+    state.progress(bytes.len() as u64, total).await;
     verify_binary(&bytes, expected_sha256)?;
+    Ok(bytes)
+}
 
+fn replace_binary(bytes: &[u8]) -> Result<(), String> {
     let current = std::env::current_exe().map_err(|e| format!("无法定位当前程序: {e}"))?;
     let parent = current
         .parent()
@@ -197,7 +343,7 @@ pub async fn apply_update(asset_url: &str, expected_sha256: &str) -> Result<(), 
     {
         use std::os::unix::fs::PermissionsExt;
         let new_path = parent.join(".soundguard-server.new");
-        std::fs::write(&new_path, &bytes).map_err(|e| format!("写入新程序失败: {e}"))?;
+        std::fs::write(&new_path, bytes).map_err(|e| format!("写入新程序失败: {e}"))?;
         std::fs::set_permissions(&new_path, std::fs::Permissions::from_mode(0o755))
             .map_err(|e| format!("设置执行权限失败: {e}"))?;
         std::fs::rename(&new_path, &current).map_err(|e| format!("替换程序失败: {e}"))?;
@@ -208,7 +354,7 @@ pub async fn apply_update(asset_url: &str, expected_sha256: &str) -> Result<(), 
     {
         let new_path = parent.join("soundguard-server.exe.new");
         let old_path = parent.join("soundguard-server.exe.old");
-        std::fs::write(&new_path, &bytes).map_err(|e| format!("写入新程序失败: {e}"))?;
+        std::fs::write(&new_path, bytes).map_err(|e| format!("写入新程序失败: {e}"))?;
         if old_path.exists() {
             let _ = std::fs::remove_file(&old_path);
         }
@@ -219,9 +365,88 @@ pub async fn apply_update(asset_url: &str, expected_sha256: &str) -> Result<(), 
             format!("替换程序失败: {e}")
         })?;
     }
-
-    tracing::info!("Server binary updated to latest release");
     Ok(())
+}
+
+/// Downloads the new binary from GitHub, falling back to mirrors when the
+/// official asset host is blocked or slow. Every candidate is checked against
+/// the official release's SHA-256 before the executable is replaced.
+pub async fn apply_update(
+    asset_url: &str,
+    expected_sha256: &str,
+    state: &UpdateState,
+    new_version: &str,
+) -> Result<bool, String> {
+    let _guard = UPDATE_LOCK
+        .try_lock()
+        .map_err(|_| "更新正在进行，请稍后查看版本")?;
+    if expected_sha256.len() != 64 || !expected_sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("发布文件缺少有效的 SHA-256 校验值，请手动更新".to_string());
+    }
+    validate_asset_url(asset_url)?;
+    let client = reqwest::Client::new();
+    let mirrors = mirror_prefixes();
+    let mut candidates = vec![asset_url.to_string()];
+    candidates.extend(
+        mirrors
+            .iter()
+            .map(|prefix| format!("{prefix}{asset_url}")),
+    );
+
+    let mut bytes = None;
+    let mut last_error = String::new();
+    for (index, candidate) in candidates.iter().enumerate() {
+        let label = if index == 0 {
+            "官方源".to_string()
+        } else {
+            format!("镜像源 {}/{}", index, mirrors.len())
+        };
+        state
+            .set("downloading", format!("正在从{label}下载更新…"))
+            .await;
+        match download_candidate(&client, candidate, expected_sha256, state).await {
+            Ok(data) => {
+                bytes = Some(data);
+                break;
+            }
+            Err(error) => {
+                last_error = format!("{label}: {error}");
+            }
+        }
+    }
+    let bytes = bytes.ok_or_else(|| {
+        if last_error.is_empty() {
+            "下载更新失败".to_string()
+        } else {
+            format!("官方源与镜像均下载失败（{last_error}）")
+        }
+    })?;
+
+    state.set("applying", "正在校验并替换服务端程序…").await;
+    replace_binary(&bytes)?;
+    let restart_required = !managed_restart();
+    state
+        .finish(
+            if restart_required { "done" } else { "restarting" },
+            if restart_required {
+                "程序已替换，请手动重启服务端以使用新版本"
+            } else {
+                "更新完成，服务端即将重启"
+            },
+            new_version,
+            restart_required,
+        )
+        .await;
+    if !restart_required {
+        tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            tracing::info!("Update applied; restarting server");
+            // The supplied systemd unit restarts only non-zero exits.
+            std::process::exit(75);
+        });
+    }
+    tracing::info!("Server binary updated to latest release");
+    Ok(restart_required)
 }
 
 fn verify_binary(bytes: &[u8], expected_sha256: &str) -> Result<(), String> {
@@ -255,5 +480,26 @@ mod tests {
         let hash = format!("{:x}", Sha256::digest(&html));
         assert!(verify_binary(&html, &hash).is_err());
         assert!(verify_binary(b"short", &hash).is_err());
+    }
+
+    #[tokio::test]
+    async fn status_tracks_progress_and_releases_the_update_lock() {
+        let state = UpdateState::new();
+        state
+            .running
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        state.progress(512, 1024).await;
+        let status = state.snapshot().await;
+        assert_eq!(status.state, "downloading");
+        assert!((status.progress - 0.5).abs() < 0.001);
+        state.finish("done", "ok", "9.9.9", true).await;
+        let status = state.snapshot().await;
+        assert_eq!(status.state, "done");
+        assert_eq!(status.progress, 1.0);
+        assert_eq!(status.new_version, "9.9.9");
+        assert!(status.restart_required);
+        assert!(!state
+            .running
+            .load(std::sync::atomic::Ordering::SeqCst));
     }
 }

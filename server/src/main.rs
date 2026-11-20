@@ -49,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
         dummy_password_hash: Arc::new(auth::hash_password(&auth::generate_password(24))?),
         password_jobs: Arc::new(tokio::sync::Semaphore::new(4)),
         login_guard: Arc::new(std::sync::Mutex::new(crate::state::LoginGuard::default())),
+        update: Arc::new(crate::update::UpdateState::new()),
     };
 
     monitor::spawn_offline_monitor(state.clone());

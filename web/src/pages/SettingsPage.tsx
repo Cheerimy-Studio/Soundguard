@@ -29,7 +29,14 @@ import {
   formatDb,
   formatFullDateTime,
 } from "../lib/format";
-import type { DeviceSettings, EmailStatus, Overview, Settings, UpdateCheck } from "../types";
+import type {
+  DeviceSettings,
+  EmailStatus,
+  Overview,
+  Settings,
+  UpdateCheck,
+  UpdateStatus,
+} from "../types";
 
 interface SettingsPageProps {
   overview: Overview;
@@ -162,6 +169,8 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
   const [updateLoading, setUpdateLoading] = useState(false);
   const [updateApplying, setUpdateApplying] = useState(false);
   const [updateMessage, setUpdateMessage] = useState("");
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const updatePollRef = useRef<number | null>(null);
   const [fixedPasswordInput, setFixedPasswordInput] = useState("");
   const [fixedPasswordSaving, setFixedPasswordSaving] = useState(false);
   const [alertEmails, setAlertEmails] = useState(overview.settings.alertRecipients.join(", "));
@@ -314,10 +323,102 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
     }
   }
 
+  function stopUpdatePoll() {
+    if (updatePollRef.current !== null) {
+      window.clearInterval(updatePollRef.current);
+      updatePollRef.current = null;
+    }
+  }
+
+  useEffect(() => () => stopUpdatePoll(), []);
+
+  function startUpdatePoll() {
+    stopUpdatePoll();
+    let failures = 0;
+    let inFlight = false;
+    const tick = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const status = await api.updateStatus();
+        failures = 0;
+        setUpdateStatus(status);
+        if (status.state === "restarting") {
+          stopUpdatePoll();
+          setUpdateApplying(false);
+          setUpdateCheck((previous) =>
+            previous
+              ? {
+                  ...previous,
+                  updateAvailable: false,
+                  latestVersion: status.newVersion || previous.latestVersion,
+                }
+              : previous,
+          );
+          setUpdateMessage("更新完成，服务端正在重启，请稍后刷新页面");
+        } else if (status.state === "done") {
+          stopUpdatePoll();
+          setUpdateApplying(false);
+          setUpdateCheck((previous) =>
+            previous
+              ? {
+                  ...previous,
+                  updateAvailable: false,
+                  latestVersion: status.newVersion || previous.latestVersion,
+                }
+              : previous,
+          );
+          setUpdateMessage(
+            status.message || `v${status.newVersion} 程序已替换，请手动重启服务端后刷新页面`,
+          );
+        } else if (status.state === "failed" || status.state === "up-to-date") {
+          stopUpdatePoll();
+          setUpdateApplying(false);
+          setUpdateMessage(status.message || "更新失败");
+        } else {
+          const percent = status.total > 0 ? ` ${Math.round(status.progress * 100)}%` : "";
+          setUpdateMessage(`${status.message || "正在更新…"}${percent}`);
+        }
+      } catch {
+        failures += 1;
+        if (failures >= 30) {
+          stopUpdatePoll();
+          setUpdateApplying(false);
+          setUpdateMessage("无法获取更新进度，请刷新页面确认服务端版本");
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+    void tick();
+    updatePollRef.current = window.setInterval(() => void tick(), 1200);
+  }
+
+  useEffect(() => {
+    if (!isSuper) return;
+    let cancelled = false;
+    api
+      .updateStatus()
+      .then((status) => {
+        if (cancelled) return;
+        if (["downloading", "applying", "restarting"].includes(status.state)) {
+          setUpdateStatus(status);
+          setUpdateApplying(true);
+          setUpdateMessage(status.message);
+          startUpdatePoll();
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [isSuper]);
+
   async function checkForUpdate() {
     if (updateLoading) return;
     setUpdateLoading(true);
     setUpdateMessage("");
+    setUpdateStatus(null);
     try {
       const result = await api.updateCheck();
       setUpdateCheck(result);
@@ -334,17 +435,28 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
   async function applyServerUpdate() {
     if (updateApplying || !updateCheck) return;
     setUpdateApplying(true);
-    setUpdateMessage("正在下载并应用更新…");
+    setUpdateStatus(null);
+    setUpdateMessage("正在检查并启动更新…");
     try {
       const result = await api.applyUpdate();
-      if (result.ok) {
-        setUpdateMessage(result.restartRequired ? `v${result.newVersion} 程序已下载，请手动重启服务端后刷新页面` : `已更新到 v${result.newVersion}，服务端正在重启，请稍后刷新页面`);
-      } else {
+      if (!result.ok) {
         setUpdateMessage(result.message || "当前已是最新版本");
+        setUpdateApplying(false);
+        return;
+      }
+      if (result.started) {
+        setUpdateMessage(result.message || "更新已在后台下载，请稍候…");
+        startUpdatePoll();
+      } else {
+        setUpdateMessage(
+          result.restartRequired
+            ? `v${result.newVersion} 程序已下载，请手动重启服务端后刷新页面`
+            : `已更新到 v${result.newVersion}，服务端正在重启，请稍后刷新页面`,
+        );
+        setUpdateApplying(false);
       }
     } catch (error) {
       setUpdateMessage(error instanceof Error ? error.message : "更新失败");
-    } finally {
       setUpdateApplying(false);
     }
   }
@@ -1018,7 +1130,7 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
               <div className="settings-icon emerald"><RefreshCw size={18} /></div>
               <div>
                 <h3>软件更新</h3>
-                <p>检查 GitHub 发布版本。在线更新仅替换服务端程序，需程序目录可写；systemd 默认安装和 Docker 部署请按发布说明更新完整包。</p>
+                <p>检查 GitHub 发布版本；官方下载失败会自动尝试镜像源。更新在后台进行，可离开本页。在线更新仅替换服务端程序，需程序目录可写；systemd 默认安装和 Docker 部署请按发布说明更新完整包。</p>
               </div>
             </div>
             {updateCheck && (
@@ -1037,8 +1149,36 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
               </div>
             )}
             {updateMessage && <div className="inline-note">{updateMessage}</div>}
+            {updateStatus &&
+              ["downloading", "applying", "restarting"].includes(updateStatus.state) && (
+                <div
+                  className={`update-progress ${
+                    updateStatus.total === 0 && updateStatus.state === "downloading"
+                      ? "is-indeterminate"
+                      : ""
+                  }`}
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round(
+                    (updateStatus.state === "applying" || updateStatus.state === "restarting"
+                      ? 1
+                      : updateStatus.progress) * 100,
+                  )}
+                >
+                  <span
+                    style={{
+                      width: `${
+                        (updateStatus.state === "applying" || updateStatus.state === "restarting"
+                          ? 1
+                          : updateStatus.progress) * 100
+                      }%`,
+                    }}
+                  />
+                </div>
+              )}
             <div className="mail-actions">
-              <button type="button" className="ghost-button" onClick={() => void checkForUpdate()} disabled={updateLoading}>
+              <button type="button" className="ghost-button" onClick={() => void checkForUpdate()} disabled={updateLoading || updateApplying}>
                 {updateLoading ? <LoaderCircle size={14} className="spin" /> : <RefreshCw size={14} />}
                 检查更新
               </button>

@@ -1,6 +1,7 @@
 import type {
   NvidiaKeyState,
   UpdateCheck,
+  UpdateStatus,
   Alert,
   CreateUserPayload,
   CallRecord,
@@ -288,8 +289,18 @@ export const api = {
     return request<UpdateCheck>("/update/check");
   },
 
-  applyUpdate(): Promise<{ ok: boolean; message: string; newVersion?: string; restartRequired?: boolean }> {
+  applyUpdate(): Promise<{
+    ok: boolean;
+    message: string;
+    newVersion?: string;
+    restartRequired?: boolean;
+    started?: boolean;
+  }> {
     return request("/update/apply", { method: "POST", body: JSON.stringify({}) });
+  },
+
+  updateStatus(): Promise<UpdateStatus> {
+    return request<UpdateStatus>("/update/status");
   },
 
   nvidiaKey(): Promise<NvidiaKeyState> {

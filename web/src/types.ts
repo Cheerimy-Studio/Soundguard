@@ -300,3 +300,13 @@ export interface UpdateCheck {
     windowsServer: string;
   };
 }
+
+export interface UpdateStatus {
+  state: string;
+  progress: number;
+  downloaded: number;
+  total: number;
+  message: string;
+  newVersion: string;
+  restartRequired: boolean;
+}

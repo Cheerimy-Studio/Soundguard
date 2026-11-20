@@ -55,6 +55,8 @@ fn setup_style(ctx: &egui::Context) {
     style.visuals.window_fill = egui::Color32::WHITE;
     style.visuals.override_text_color = Some(egui::Color32::from_rgb(23, 32, 51));
     style.visuals.selection.bg_fill = egui::Color32::from_rgb(207, 236, 238);
+    style.visuals.selection.stroke =
+        egui::Stroke::new(1.2_f32, egui::Color32::from_rgb(13, 122, 130));
     style.visuals.widgets.inactive.bg_stroke =
         egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(213, 221, 231));
     style.visuals.extreme_bg_color = egui::Color32::WHITE;

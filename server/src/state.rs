@@ -23,4 +23,5 @@ pub struct AppState {
     pub dummy_password_hash: Arc<String>,
     pub password_jobs: Arc<tokio::sync::Semaphore>,
     pub login_guard: Arc<std::sync::Mutex<LoginGuard>>,
+    pub update: Arc<crate::update::UpdateState>,
 }

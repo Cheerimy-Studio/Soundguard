@@ -141,6 +141,9 @@ try {
   await req('/settings',{...managerAuth,method:'PUT',body:{...globalSettings,captureStart:'06:00',captureEnd:'07:00'},status:403}); checks++;
   await req('/settings/nvidia-key', {...managerAuth,status:403});
   await req('/update/apply',{...managerAuth,body:{},status:403});
+  await req('/update/status',{token:operator,status:403});
+  const idleUpdate=(await req('/update/status',auth)).body;
+  assert.equal(idleUpdate.state,'idle'); checks++;
   const serverDate=new Date(Date.parse(heartbeat.serverTime)+heartbeat.serverUtcOffsetSecs*1000);
   const minute=serverDate.getUTCHours()*60+serverDate.getUTCMinutes();
   const hhmm=m=>`${String(Math.floor((m%1440)/60)).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;

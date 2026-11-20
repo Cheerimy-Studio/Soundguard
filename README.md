@@ -241,14 +241,14 @@ npm run build:client:win7
 
 脚本会调用 `scripts/build-win7.ps1`，使用 `client-native/win7-libs` 中的 Windows 导入库，
 并把 `combase.dll` 导入重定向到 `ole32.dll`，产物为 `dist\soundguard-client-win7.exe`。
-Win7 安装包为 `dist\soundguard-client-win7-setup-0.2.9.exe`，支持开机自启。
+Win7 安装包为 `dist\soundguard-client-win7-setup-0.2.10.exe`，支持开机自启。
 
 ### 4.6 安卓 App
 
 仓库已包含可直接安装的 APK：
 
 ```text
-dist\soundguard-android-0.2.9.apk
+dist\soundguard-android-0.2.10.apk
 ```
 
 安装后打开 **声垣**：
@@ -305,6 +305,21 @@ docker compose up -d --build
 
 完整的 Linux 部署、HTTPS、备份、防火墙与排障说明见 [README-LINUX.md](README-LINUX.md)。
 
+### 4.8 在线更新与镜像
+
+管理端「设置 → 软件更新」读取 GitHub Release，下载在后台进行，页面轮询
+`/api/update/status` 显示进度，因此不会因为反向代理（Cloudflare）约 100 秒的
+请求超时而返回 524。
+
+- 版本、资产地址与 SHA-256 始终来自官方 `api.github.com`；镜像只用于下载二进制，
+  下载后仍必须通过官方 SHA-256 校验。
+- 官方资产下载失败或单源 180 秒无进展时，自动依次尝试 `ghfast.top`、`gh-proxy.com`、
+  `ghproxy.net`。
+- 可用 `UPDATE_MIRRORS` 自定义前缀（逗号分隔，末尾自动补 `/`），设为 `off` 禁用镜像，
+  例如 `UPDATE_MIRRORS=https://ghfast.top/`。
+- Windows 便携版替换后需手动重启；systemd 环境会以退出码 75 触发自动重启
+  （unit 需允许程序目录可写）。Docker 或程序目录不可写的安装请使用完整发布包。
+
 ---
 
 ## 5. 配置项
@@ -337,6 +352,7 @@ docker compose up -d --build
 | `RETENTION_DAYS` | `30` | 遥测、告警、通话记录和邮件预览保留天数；无引用音频自动清理 |
 | `SMTP_HOST/PORT/USER/PASS/FROM` | 空 | SMTP 配置 |
 | `ICE_SERVERS` | 腾讯/小米/Bilibili/Google/Cloudflare STUN | WebRTC ICE 服务器 JSON |
+| `UPDATE_MIRRORS` | `ghfast.top` / `gh-proxy.com` / `ghproxy.net` | GitHub 资产下载镜像前缀，逗号分隔，末尾自动补 `/`；`off` 禁用。SHA-256 仍以官方 API 为准 |
 | `CORS_ORIGINS` | 空 | 允许的管理端来源，逗号分隔；空时支持同源访问及内置安卓 App。安卓 App 来源为 `https://appassets.androidplatform.net` |
 | `TLS_CERT` / `TLS_KEY` | 空 | 同时配置时服务端直接提供 HTTPS/WSS；否则建议在 Nginx/Caddy 终止 TLS |
 | `MEDIA_KEY_FILE` | `data/media-key` | 音频加密密钥路径；生产建议放在 data 目录和备份卷之外 |

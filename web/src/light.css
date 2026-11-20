@@ -2282,3 +2282,27 @@ button:disabled { cursor: default; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+.update-progress {
+  position: relative;
+  height: 6px;
+  margin: 10px 0 2px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e7edf2;
+}
+.update-progress > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #0d7a82, #31a3a8);
+  transition: width .35s ease;
+}
+.update-progress.is-indeterminate > span {
+  width: 38% !important;
+  animation: update-progress-slide 1.1s ease-in-out infinite;
+}
+@keyframes update-progress-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}

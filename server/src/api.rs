@@ -185,6 +185,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/war-mode/leaderboard", get(war_leaderboard))
         .route("/update/check", get(check_update))
         .route("/update/apply", post(apply_update))
+        .route("/update/status", get(update_status))
         .route("/settings", get(get_settings).put(update_settings))
         .route("/settings/fixed-password", put(update_fixed_password))
         .route("/device/control", post(control_device))
@@ -2661,16 +2662,35 @@ async fn check_update(admin: Admin) -> Result<Json<crate::update::UpdateCheck>, 
     Ok(Json(result))
 }
 
+async fn update_status(
+    admin: Admin,
+    State(state): State<AppState>,
+) -> Result<Json<crate::update::UpdateStatus>, AppError> {
+    admin.require_update_admin()?;
+    Ok(Json(state.update.snapshot().await))
+}
+
 async fn apply_update(
     admin: Admin,
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     admin.require_super()?;
+    if state
+        .update
+        .running
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return Ok(Json(json!({
+            "ok": true,
+            "started": true,
+            "message": "更新正在进行",
+        })));
+    }
     let check = crate::update::check_github()
         .await
         .map_err(|e| AppError::new(StatusCode::BAD_GATEWAY, e))?;
     if !check.update_available {
-        return Ok(Json(serde_json::json!({
+        return Ok(Json(json!({
             "ok": false,
             "message": "当前已是最新版本",
         })));
@@ -2680,30 +2700,44 @@ async fn apply_update(
         return Err(AppError::bad_request("当前平台请手动安装更新"));
     }
     let (asset_url, sha256) = if cfg!(windows) {
-        (&check.download_urls.windows_server, &check.download_urls.windows_sha256)
+        (
+            check.download_urls.windows_server.clone(),
+            check.download_urls.windows_sha256.clone(),
+        )
     } else {
-        (&check.download_urls.linux_x86_64, &check.download_urls.linux_sha256)
+        (
+            check.download_urls.linux_x86_64.clone(),
+            check.download_urls.linux_sha256.clone(),
+        )
     };
-
-    crate::update::apply_update(asset_url, sha256)
-        .await
-        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-
-    let managed_restart = std::env::var_os("INVOCATION_ID").is_some()
-        || std::env::var("SOUNDGUARD_AUTO_RESTART").is_ok_and(|value| value == "1");
-    if managed_restart {
-        let config = state.config.clone();
+    if !state
+        .update
+        .running
+        .swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
+        state
+            .update
+            .set("downloading", "正在准备下载更新…")
+            .await;
+        let update_state = state.update.clone();
+        let version = check.latest_version.clone();
+        // Cloudflare and similar proxies return 524 when a request takes
+        // longer than ~100 seconds. The download runs in the background and
+        // the dashboard polls /api/update/status instead.
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            tracing::info!("Update applied; restarting server (port {})", config.port);
-            // The supplied systemd unit restarts only non-zero exits.
-            std::process::exit(75);
+            if let Err(error) =
+                crate::update::apply_update(&asset_url, &sha256, &update_state, &version).await
+            {
+                update_state
+                    .finish("failed", error, &version, false)
+                    .await;
+            }
         });
     }
     Ok(Json(json!({
         "ok": true,
-        "message": if managed_restart { "更新完成，服务即将重启" } else { "程序已替换，请手动重启服务端以使用新版本" },
-        "restartRequired": !managed_restart,
+        "started": true,
+        "message": "更新已在后台下载，请稍候查看进度",
         "newVersion": check.latest_version,
     })))
 }
