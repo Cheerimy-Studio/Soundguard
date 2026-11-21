@@ -1840,7 +1840,7 @@ dependencies = [
 
 [[package]]
 name = "soundguard-server"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "aes-gcm",
  "anyhow",

@@ -300,8 +300,10 @@ impl AudioShared {
     }
 
     pub fn set_capturing(&self, capturing: bool) {
-        self.capturing.store(capturing, Ordering::SeqCst);
-        if !capturing {
+        let changed = self.capturing.swap(capturing, Ordering::SeqCst) != capturing;
+        if changed {
+            // Start the 30 s window when capture actually begins, not when the
+            // process was launched (setup screens can take minutes).
             self.reset_window_and_ring();
         }
     }
@@ -704,6 +706,19 @@ fn encode_wav_i16(samples: &[f32], sample_rate: u32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enabling_capture_starts_a_fresh_thirty_second_window() {
+        let shared = AudioShared::new(90.0);
+        {
+            let mut window = shared.window.lock().unwrap();
+            window.started = Instant::now() - std::time::Duration::from_secs(60);
+        }
+        shared.set_capturing(false);
+        shared.set_capturing(true);
+        let window = shared.window.lock().unwrap();
+        assert!(window.started.elapsed().as_secs() < 2);
+    }
 
     #[test]
     fn first_thirty_seconds_report_zero_average() {

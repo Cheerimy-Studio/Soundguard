@@ -334,6 +334,23 @@ async fn download_candidate(
     Ok(bytes)
 }
 
+/// Windows refuses to rename a directory while a browser request still holds
+/// a file inside it. Retry briefly instead of failing an otherwise valid
+/// upload when the dashboard is open.
+fn rename_with_retry(from: &Path, to: &Path) -> Result<(), std::io::Error> {
+    let mut last_error = None;
+    for _ in 0..20 {
+        match std::fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last_error = Some(error);
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| std::io::Error::other("rename failed")))
+}
+
 fn replace_binary(bytes: &[u8]) -> Result<(), String> {
     let current = std::env::current_exe().map_err(|e| format!("无法定位当前程序: {e}"))?;
     let parent = current
@@ -593,11 +610,11 @@ pub async fn apply_uploaded_package(
     replace_binary(&binary)?;
     state.set("applying", "正在更新管理端文件…").await;
     if web_dist.exists() {
-        std::fs::rename(web_dist, &old_dir)
+        rename_with_retry(web_dist, &old_dir)
             .map_err(|e| format!("暂存旧管理端文件失败：{e}"))?;
     }
-    if let Err(error) = std::fs::rename(&new_dir, web_dist) {
-        let _ = std::fs::rename(&old_dir, web_dist);
+    if let Err(error) = rename_with_retry(&new_dir, web_dist) {
+        let _ = rename_with_retry(&old_dir, web_dist);
         return Err(format!("更新管理端文件失败：{error}"));
     }
     if old_dir.exists() {
