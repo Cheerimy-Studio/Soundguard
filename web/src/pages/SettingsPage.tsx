@@ -21,6 +21,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   SlidersHorizontal,
+  Upload,
   Volume2,
 } from "lucide-react";
 import { api } from "../api";
@@ -170,7 +171,10 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
   const [updateApplying, setUpdateApplying] = useState(false);
   const [updateMessage, setUpdateMessage] = useState("");
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [updateFile, setUpdateFile] = useState<File | null>(null);
+  const [updateUploading, setUpdateUploading] = useState(false);
   const updatePollRef = useRef<number | null>(null);
+  const updateFileRef = useRef<HTMLInputElement | null>(null);
   const [fixedPasswordInput, setFixedPasswordInput] = useState("");
   const [fixedPasswordSaving, setFixedPasswordSaving] = useState(false);
   const [alertEmails, setAlertEmails] = useState(overview.settings.alertRecipients.join(", "));
@@ -458,6 +462,30 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
     } catch (error) {
       setUpdateMessage(error instanceof Error ? error.message : "更新失败");
       setUpdateApplying(false);
+    }
+  }
+
+  async function uploadServerPackage() {
+    if (!updateFile || updateUploading || updateApplying) return;
+    setUpdateUploading(true);
+    setUpdateStatus(null);
+    setUpdateMessage("正在上传完整包…");
+    try {
+      const result = await api.uploadUpdate(updateFile);
+      if (!result.ok) {
+        setUpdateMessage(result.message || "完整包上传失败");
+        setUpdateUploading(false);
+        return;
+      }
+      setUpdateFile(null);
+      if (updateFileRef.current) updateFileRef.current.value = "";
+      setUpdateUploading(false);
+      setUpdateApplying(true);
+      setUpdateMessage(result.message || "完整包已接收，正在应用…");
+      startUpdatePoll();
+    } catch (error) {
+      setUpdateMessage(error instanceof Error ? error.message : "完整包上传失败");
+      setUpdateUploading(false);
     }
   }
 
@@ -770,7 +798,7 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
               <div className="settings-icon cyan"><SlidersHorizontal size={18} /></div>
               <div>
                 <h3>{canConfigure ? "全局默认 · 分贝告警阈值" : "分贝告警阈值（全局默认，只读）"}</h3>
-                <p>客户端每 30 秒计算一次平均分贝，达到阈值即生成告警并发送邮件。</p>
+                <p>按 30 秒平均分贝判断告警；启动后的第一个 30 秒不告警。</p>
               </div>
             </div>
             {canConfigure ? (
@@ -826,8 +854,8 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
             <div className="settings-card-head">
               <div className="settings-icon cyan"><AudioWaveform size={18} /></div>
               <div>
-                <h3>AI 降噪与人声增强</h3>
-                <p>基于 RNNoise 神经网络：常驻背景噪声（如 60 dB 环境嗡声）被持续抑制，突发人声和异常事件保持突出。开启后分贝值反映降噪后的信号，请重新校准阈值。</p>
+                <h3>降噪与人声增强</h3>
+                <p>降噪只作用于分贝统计，不改变取证录音和对讲音频。开启后请重新校准阈值。</p>
               </div>
             </div>
             <div className="field-grid">
@@ -1130,7 +1158,7 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
               <div className="settings-icon emerald"><RefreshCw size={18} /></div>
               <div>
                 <h3>软件更新</h3>
-                <p>检查 GitHub 发布版本；官方下载失败会自动尝试镜像源。更新在后台进行，可离开本页。在线更新仅替换服务端程序，需程序目录可写；systemd 默认安装和 Docker 部署请按发布说明更新完整包。</p>
+                <p>从 GitHub 检查更新，官方源失败时自动切换镜像。下载在后台进行，需程序目录可写。</p>
               </div>
             </div>
             {updateCheck && (
@@ -1194,6 +1222,37 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
                 </a>
               )}
             </div>
+            {isSuper && (
+              <div className="update-upload">
+                <div className="update-upload-row">
+                  <label className="ghost-button small update-file-button">
+                    <Upload size={14} />
+                    选择完整包
+                    <input
+                      ref={updateFileRef}
+                      type="file"
+                      accept=".zip,application/zip"
+                      onChange={(event) => setUpdateFile(event.target.files?.[0] ?? null)}
+                    />
+                  </label>
+                  <span className="update-file-name">{updateFile?.name ?? "未选择文件"}</span>
+                  <button
+                    type="button"
+                    className="primary-button small"
+                    onClick={() => void uploadServerPackage()}
+                    disabled={!updateFile || updateUploading || updateApplying}
+                  >
+                    {updateUploading ? (
+                      <LoaderCircle size={14} className="spin" />
+                    ) : (
+                      <Upload size={14} />
+                    )}
+                    上传并更新
+                  </button>
+                </div>
+                <small>ZIP 需包含当前平台的 soundguard-server 与 web/dist。</small>
+              </div>
+            )}
           </section>)}
 
           {canConfigure && (<section id="war-policy" className="panel settings-card">
@@ -1245,7 +1304,7 @@ export function SettingsPage({ overview, deviceId, isSuper, canConfigure, onSave
                 <input type="time" value={form.captureEnd} onChange={(e) => update("captureEnd", e.target.value)} />
               </label>
             </div>
-            <div className="inline-note">每日重复，可跨午夜。只填自动开启：从该时间起保持采集；只填自动关闭：每日 00:00 起采集，到该时间停止；两个相同表示全天。手动暂停优先，客户端约 10 秒内同步。</div>
+            <div className="inline-note">每日重复，可跨午夜；两端相同表示全天。手动暂停优先。</div>
           </section>)}
 
           {canConfigure && (<section id="stun-policy" className="panel settings-card">

@@ -14,6 +14,7 @@ pub struct ClientConfig {
     pub consent_accepted: bool,
     pub auto_answer: bool,
     pub alert_volume: f32,
+    pub report_sound: bool,
 }
 impl Default for ClientConfig {
     fn default() -> Self {
@@ -26,6 +27,7 @@ impl Default for ClientConfig {
             consent_accepted: false,
             auto_answer: true,
             alert_volume: 0.65,
+            report_sound: true,
         }
     }
 }
@@ -116,6 +118,12 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"{broken");
         std::fs::remove_file(path).unwrap();
     }
+    #[test]
+    fn report_sound_defaults_on_for_old_configs() {
+        let config: ClientConfig = serde_json::from_str("{}").unwrap();
+        assert!(config.report_sound);
+    }
+
     #[test]
     fn legacy_config_and_utf8_bom_migrate() {
         let c: ClientConfig = serde_json::from_str(

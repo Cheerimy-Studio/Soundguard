@@ -303,6 +303,16 @@ export const api = {
     return request<UpdateStatus>("/update/status");
   },
 
+  uploadUpdate(file: File): Promise<{ ok: boolean; started?: boolean; message?: string }> {
+    const form = new FormData();
+    form.append("package", file);
+    return request("/update/upload", {
+      method: "POST",
+      body: form,
+      signal: AbortSignal.timeout(180_000),
+    });
+  },
+
   nvidiaKey(): Promise<NvidiaKeyState> {
     return request<NvidiaKeyState>("/settings/nvidia-key");
   },

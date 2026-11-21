@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::io::{Cursor, Read};
+use std::path::Path;
 
 static UPDATE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const MAX_BINARY_BYTES: usize = 128 * 1024 * 1024;
@@ -449,16 +451,178 @@ pub async fn apply_update(
     Ok(restart_required)
 }
 
+fn verify_executable(bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() < 1024 {
+        return Err("程序文件过小，可能是无效更新包".into());
+    }
+    #[cfg(target_os = "linux")]
+    if !bytes.starts_with(b"\x7fELF") {
+        return Err("更新文件不是 Linux 可执行程序".into());
+    }
+    #[cfg(windows)]
+    if !bytes.starts_with(b"MZ") {
+        return Err("更新文件不是 Windows 可执行程序".into());
+    }
+    Ok(())
+}
+
 fn verify_binary(bytes: &[u8], expected_sha256: &str) -> Result<(), String> {
-    if bytes.len() < 1024 { return Err("下载的文件过小，可能是无效更新包".into()); }
+    verify_executable(bytes)?;
     let actual = format!("{:x}", Sha256::digest(bytes));
     if !actual.eq_ignore_ascii_case(expected_sha256) {
         return Err("更新文件校验失败，当前程序未替换".into());
     }
-    #[cfg(target_os = "linux")]
-    if !bytes.starts_with(b"\x7fELF") { return Err("更新文件不是 Linux 可执行程序".into()); }
-    #[cfg(windows)]
-    if !bytes.starts_with(b"MZ") { return Err("更新文件不是 Windows 可执行程序".into()); }
+    Ok(())
+}
+
+const MAX_UPLOAD_UNCOMPRESSED: u64 = 256 * 1024 * 1024;
+const MAX_UPLOAD_FILES: usize = 4_000;
+
+/// Applies a ZIP containing the current platform's server binary and a
+/// `web/dist` tree. The upload path is for offline/blocked-GitHub installs.
+pub async fn apply_uploaded_package(
+    package: Vec<u8>,
+    web_dist: &Path,
+    state: &UpdateState,
+) -> Result<(), String> {
+    state.set("applying", "正在校验完整包…").await;
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(&package)).map_err(|e| format!("完整包不是有效 ZIP：{e}"))?;
+    let binary_candidates: &[&str] = if cfg!(windows) {
+        &["windows/soundguard-server.exe", "soundguard-server.exe"]
+    } else {
+        &["linux/soundguard-server", "soundguard-server"]
+    };
+    let mut binary: Option<Vec<u8>> = None;
+    let mut web_files = 0usize;
+    let mut total = 0u64;
+    let mut has_index = false;
+    for index in 0..archive.len() {
+        let mut file = archive
+            .by_index(index)
+            .map_err(|e| format!("读取完整包失败：{e}"))?;
+        let Some(path) = file.enclosed_name() else {
+            return Err("完整包包含非法路径".into());
+        };
+        let path = path.to_string_lossy().replace('\\', "/");
+        if file.is_dir() {
+            continue;
+        }
+        if let Some(mode) = file.unix_mode() {
+            if mode & 0o170000 == 0o120000 {
+                return Err("完整包不能包含符号链接".into());
+            }
+        }
+        total = total.saturating_add(file.size());
+        if total > MAX_UPLOAD_UNCOMPRESSED {
+            return Err("完整包解压后超过 256 MB".into());
+        }
+        if binary_candidates.iter().any(|candidate| path == *candidate) {
+            let mut data = Vec::with_capacity(file.size() as usize);
+            file.read_to_end(&mut data)
+                .map_err(|e| format!("读取服务端程序失败：{e}"))?;
+            verify_executable(&data)?;
+            binary = Some(data);
+        } else if path.starts_with("web/dist/") {
+            web_files += 1;
+            if path == "web/dist/index.html" {
+                has_index = true;
+            }
+        }
+    }
+    let binary = binary.ok_or_else(|| "完整包缺少当前平台的服务端程序".to_string())?;
+    if web_files == 0 || !has_index {
+        return Err("完整包缺少 web/dist/index.html".into());
+    }
+    if web_files > MAX_UPLOAD_FILES {
+        return Err("完整包文件数量过多".into());
+    }
+
+    let parent = web_dist
+        .parent()
+        .ok_or_else(|| "无法定位管理端目录".to_string())?;
+    let name = web_dist
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("dist");
+    let new_dir = parent.join(format!(".{name}.upload-new"));
+    let old_dir = parent.join(format!(".{name}.upload-old"));
+    if new_dir.exists() {
+        std::fs::remove_dir_all(&new_dir).map_err(|e| format!("清理旧暂存目录失败：{e}"))?;
+    }
+    if old_dir.exists() {
+        std::fs::remove_dir_all(&old_dir).map_err(|e| format!("清理旧备份目录失败：{e}"))?;
+    }
+    std::fs::create_dir_all(&new_dir).map_err(|e| format!("创建暂存目录失败：{e}"))?;
+
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(&package)).map_err(|e| format!("完整包不是有效 ZIP：{e}"))?;
+    let mut extracted = 0u64;
+    for index in 0..archive.len() {
+        let mut file = archive
+            .by_index(index)
+            .map_err(|e| format!("读取完整包失败：{e}"))?;
+        let Some(path) = file.enclosed_name() else {
+            continue;
+        };
+        let path = path.to_string_lossy().replace('\\', "/");
+        let Some(relative) = path.strip_prefix("web/dist/") else {
+            continue;
+        };
+        if relative.is_empty() || file.is_dir() {
+            continue;
+        }
+        let target = new_dir.join(relative);
+        if !target.starts_with(&new_dir) {
+            return Err("完整包包含非法路径".into());
+        }
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("创建管理端目录失败：{e}"))?;
+        }
+        let mut output =
+            std::fs::File::create(&target).map_err(|e| format!("写入管理端文件失败：{e}"))?;
+        std::io::copy(&mut file, &mut output)
+            .map_err(|e| format!("写入管理端文件失败：{e}"))?;
+        extracted = extracted.saturating_add(file.size());
+        if extracted > MAX_UPLOAD_UNCOMPRESSED {
+            return Err("完整包解压后超过 256 MB".into());
+        }
+    }
+
+    state.set("applying", "正在替换服务端程序…").await;
+    replace_binary(&binary)?;
+    state.set("applying", "正在更新管理端文件…").await;
+    if web_dist.exists() {
+        std::fs::rename(web_dist, &old_dir)
+            .map_err(|e| format!("暂存旧管理端文件失败：{e}"))?;
+    }
+    if let Err(error) = std::fs::rename(&new_dir, web_dist) {
+        let _ = std::fs::rename(&old_dir, web_dist);
+        return Err(format!("更新管理端文件失败：{error}"));
+    }
+    if old_dir.exists() {
+        let _ = std::fs::remove_dir_all(&old_dir);
+    }
+
+    let restart_required = !managed_restart();
+    state
+        .finish(
+            if restart_required { "done" } else { "restarting" },
+            if restart_required {
+                "完整包已应用，请手动重启服务端"
+            } else {
+                "完整包已应用，服务端即将重启"
+            },
+            "完整包",
+            restart_required,
+        )
+        .await;
+    if !restart_required {
+        tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            std::process::exit(75);
+        });
+    }
     Ok(())
 }
 
@@ -480,6 +644,33 @@ mod tests {
         let hash = format!("{:x}", Sha256::digest(&html));
         assert!(verify_binary(&html, &hash).is_err());
         assert!(verify_binary(b"short", &hash).is_err());
+    }
+
+    #[tokio::test]
+    async fn uploaded_package_rejects_invalid_or_incomplete_archives() {
+        use std::io::Write as _;
+        let state = UpdateState::new();
+        let dir = std::env::temp_dir().join(format!("sg-upload-{}", uuid::Uuid::new_v4()));
+        let web = dir.join("web/dist");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(apply_uploaded_package(b"not a zip".to_vec(), &web, &state)
+            .await
+            .is_err());
+
+        let mut buffer = Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut buffer);
+            writer
+                .start_file("web/dist/index.html", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(b"<html></html>").unwrap();
+            writer.finish().unwrap();
+        }
+        let error = apply_uploaded_package(buffer.into_inner(), &web, &state)
+            .await
+            .unwrap_err();
+        assert!(error.contains("服务端程序"), "{error}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[tokio::test]

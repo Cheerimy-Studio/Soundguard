@@ -214,9 +214,7 @@ export function DevicesPage({
         <div>
           <div className="eyebrow">设备接入</div>
           <h2>设备接入管理</h2>
-          <p>
-            每台设备拥有唯一名称和独立令牌。添加后，在采集端设置中填写服务器地址、设备编号和令牌即可接入。
-          </p>
+          <p>每台设备使用独立令牌接入，在采集端填写服务器地址、设备编号和令牌。</p>
         </div>
         {canManage ? (
           <button type="button" className="primary-button" onClick={openAdd}>

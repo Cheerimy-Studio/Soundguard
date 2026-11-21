@@ -63,7 +63,7 @@ fn button(ui: &mut egui::Ui, label: &str, accent: bool) -> egui::Response {
         .min_size(vec2(70.0, 36.0)),
     )
 }
-fn legacy_switch(ui: &mut egui::Ui, value: &mut bool) -> egui::Response {
+fn legacy_switch(ui: &mut egui::Ui, value: &mut bool, label: &str) -> egui::Response {
     let (rect, mut response) = ui.allocate_exact_size(vec2(36.0, 20.0), egui::Sense::click());
     if response.clicked() {
         *value = !*value;
@@ -88,7 +88,7 @@ fn legacy_switch(ui: &mut egui::Ui, value: &mut bool) -> egui::Response {
             egui::WidgetType::Checkbox,
             ui.is_enabled(),
             *value,
-            "自动接听",
+            label,
         )
     });
     response
@@ -118,6 +118,7 @@ enum Icon {
     Mic,
     Link,
     Lock,
+    Report,
 }
 fn draw_icon(p: &egui::Painter, rect: Rect, icon: Icon, color: C) {
     let o = rect.center();
@@ -161,6 +162,12 @@ fn draw_icon(p: &egui::Painter, rect: Rect, icon: Icon, color: C) {
             p.circle_stroke(o, 7.0, stroke);
             line([0.0, -4.0], [0.0, 0.0]);
             line([0.0, 0.0], [4.0, 2.0]);
+        }
+        Icon::Report => {
+            p.circle_stroke(o, 7.0, stroke);
+            line([0.0, 4.0], [0.0, -4.0]);
+            line([0.0, -4.0], [-3.0, -1.0]);
+            line([0.0, -4.0], [3.0, -1.0]);
         }
         Icon::Mic => {
             p.rect_stroke(
@@ -492,9 +499,9 @@ impl SoundGuardApp {
                             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                                 brand_lockup(ui, ui.cursor().min, Some("首次配置"));
                                 ui.add_space(42.0);
-                                ui.heading(R::new("连接声环境监测").size(24.0).color(TEXT));
+                                ui.heading(R::new("连接设备").size(24.0).color(TEXT));
                                 ui.label(
-                                    R::new("填写管理端生成的设备信息，并设置一个只能在本机使用的管理密码。完成后即可开始监测。")
+                                    R::new("填写设备信息，并设置本机管理密码。")
                                         .size(12.0)
                                         .color(MUTED),
                                 );
@@ -505,7 +512,7 @@ impl SoundGuardApp {
                                 field(ui, "本地密码", &mut self.setup_password, true);
                                 field(ui, "确认密码", &mut self.setup_confirm, true);
                                 ui.label(
-                                    R::new("本地密码用于打开设置、关闭自动接听和退出客户端，只保存在本机。")
+                                    R::new("本地密码仅保存在本机，用于设置、关闭自动接听和退出。")
                                         .size(12.0)
                                         .color(MUTED),
                                 );
@@ -995,10 +1002,64 @@ impl SoundGuardApp {
                         .size(12.0)
                         .color(MUTED),
                 );
-            } else {
+            }
+        });
+        ui.add_space(10.0);
+        card().show(ui, |ui| {
+            ui.set_width(324.0);
+            ui.horizontal(|ui| {
+                section_heading(ui, Icon::Report, "上报历史");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    pill(
+                        ui,
+                        &format!("累计 {}", self.status.reports_sent),
+                        TEAL,
+                        C::from_rgb(230, 245, 243),
+                    );
+                });
+            });
+            ui.add_space(10.0);
+            if self.status.report_history.is_empty() {
+                egui::Frame::none()
+                    .stroke(Stroke::new(1.0_f32, BORDER))
+                    .rounding(8.0)
+                    .inner_margin(16.0)
+                    .show(ui, |ui| {
+                        ui.set_width(286.0);
+                        ui.vertical_centered(|ui| {
+                            ui.label(R::new("暂无上报记录").size(12.0).color(MUTED));
+                        });
+                    });
+            }
+            for entry in self.status.report_history.iter().take(5) {
+                ui.vertical(|ui| {
+                    ui.label(
+                        R::new(format!("平均 {:.1} dB", entry.avg_db))
+                            .size(12.5)
+                            .strong()
+                            .color(TEXT),
+                    );
+                    ui.label(
+                        R::new(format!(
+                            "峰值 {:.1} dB　{}",
+                            entry.peak_db,
+                            entry
+                                .at
+                                .with_timezone(&chrono::Local)
+                                .format("%H:%M:%S")
+                        ))
+                        .size(10.5)
+                        .color(MUTED),
+                    );
+                });
+                ui.add_space(6.0);
+                ui.separator();
+            }
+            if self.status.pending_reports > 0 {
+                ui.add_space(4.0);
                 ui.label(
-                    R::new("管理员发布公告后会显示在这里")
-                        .size(11.0)
+                    R::new(format!("待上报 {} 条", self.status.pending_reports))
+                        .size(10.5)
                         .color(MUTED),
                 );
             }
@@ -1060,8 +1121,7 @@ impl SoundGuardApp {
                     }
                 });
             });
-            ui.label(R::new("管理端对讲与广播回放").size(12.0).color(MUTED));
-            ui.add_space(12.0);
+            ui.add_space(10.0);
             if self.status.records.is_empty() {
                 egui::Frame::none()
                     .stroke(Stroke::new(1.0_f32, BORDER))
@@ -1200,7 +1260,7 @@ impl SoundGuardApp {
                 let mut enabled = self.config.auto_answer;
                 let gap = (ui.available_width() - 38.0).max(0.0);
                 ui.add_space(gap);
-                if legacy_switch(ui, &mut enabled).changed() {
+                if legacy_switch(ui, &mut enabled, "自动接听").changed() {
                     if !enabled {
                         self.request_auth(Action::AutoAnswerOff);
                     } else {
@@ -1447,6 +1507,13 @@ impl SoundGuardApp {
                         {
                             self.test_alarm();
                         }
+                        ui.add_space(10.0);
+                        ui.horizontal(|ui| {
+                            ui.label(R::new("上报提示音").size(12.0).color(MUTED));
+                            let gap = (ui.available_width() - 38.0).max(0.0);
+                            ui.add_space(gap);
+                            legacy_switch(ui, &mut self.draft.report_sound, "上报提示音");
+                        });
                         ui.add_space(18.0);
                         ui.separator();
                         ui.add_space(18.0);

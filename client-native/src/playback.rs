@@ -378,6 +378,38 @@ pub fn play_alarm(volume: f32) -> Result<(), String> {
     Ok(())
 }
 
+/// Short two-tone confirmation for a successfully uploaded 30-second report.
+pub fn report_samples() -> Vec<f32> {
+    let mut output = Vec::with_capacity(9_600);
+    for (frequency, millis) in [(880.0_f32, 70u32), (1174.66, 90)] {
+        let count = 48_000 * millis as usize / 1000;
+        for index in 0..count {
+            let fade_in = (index as f32 / 240.0).min(1.0);
+            let fade_out = ((count - index) as f32 / 480.0).min(1.0);
+            output.push(
+                0.4 * fade_in * fade_out
+                    * (2.0 * std::f32::consts::PI * frequency * index as f32 / 48_000.0).sin(),
+            );
+        }
+        output.extend(std::iter::repeat(0.0).take(480));
+    }
+    output
+}
+
+pub fn play_report_sound(volume: f32) -> Result<(), String> {
+    let (_stream, handle) =
+        rodio::OutputStream::try_default().map_err(|e| format!("扬声器初始化失败：{e}"))?;
+    let sink = rodio::Sink::try_new(&handle).map_err(|e| e.to_string())?;
+    sink.set_volume((volume * 0.35).clamp(0.0, 1.0));
+    sink.append(rodio::buffer::SamplesBuffer::new(
+        1,
+        48_000,
+        report_samples(),
+    ));
+    sink.sleep_until_end();
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -479,6 +511,13 @@ mod tests {
         assert!(samples.iter().all(|v| v.is_finite()));
         assert!(samples.iter().any(|v| v.abs() > 0.25));
         assert!(samples.iter().any(|v| v.abs() < 0.001));
+    }
+    #[test]
+    fn report_signal_is_short_and_audible() {
+        let samples = report_samples();
+        assert!(samples.len() < 10_000);
+        assert!(samples.iter().all(|v| v.is_finite()));
+        assert!(samples.iter().any(|v| v.abs() > 0.2));
     }
 }
 

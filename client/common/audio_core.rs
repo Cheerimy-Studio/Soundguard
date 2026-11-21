@@ -446,47 +446,52 @@ impl AudioShared {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-            let mut mono: Vec<f32> = Vec::with_capacity(samples.len() / channels.max(1));
+            // Keep the unprocessed mono signal for evidence. The high-pass and
+            // denoise stages must never rewrite the original recording.
+            let mut raw: Vec<f32> = Vec::with_capacity(samples.len() / channels.max(1));
             for frame in samples.chunks_exact(channels) {
                 let sample = if channels == 1 {
                     frame[0]
                 } else {
                     frame.iter().copied().sum::<f32>() / channels as f32
                 };
-                let value = if sample.is_finite() { sample } else { 0.0 };
-                mono.push(denoiser.filter.process(value));
+                raw.push(if sample.is_finite() { sample } else { 0.0 });
+            }
+            let mut filtered = Vec::with_capacity(raw.len());
+            for &value in &raw {
+                filtered.push(denoiser.filter.process(value));
             }
 
-            // AI denoise stage (RNNoise via nnnoiseless). When off — or before
-            // the engine has been installed — the high-pass filtered signal is
-            // used directly.
+            // AI denoise (RNNoise via nnnoiseless) is for the meter only.
+            // When off — or before the engine has been installed — the
+            // high-pass filtered signal is measured directly.
             let mut denoised: Vec<f32>;
             let processed: &[f32] = if denoise_mode != DENOISE_OFF {
                 match engine.as_mut() {
                     Some(engine) => {
-                        denoised = Vec::with_capacity(mono.len());
-                        engine.process(&mono, &mut denoised);
-                        if denoised.len() == mono.len() {
+                        denoised = Vec::with_capacity(filtered.len());
+                        engine.process(&filtered, &mut denoised);
+                        if denoised.len() == filtered.len() {
                             &denoised
                         } else {
-                            &mono
+                            &filtered
                         }
                     }
-                    None => &mono,
+                    None => &filtered,
                 }
             } else {
-                &mono
+                &filtered
             };
 
-            for &filtered in processed.iter() {
-                sum_sq += (filtered as f64) * (filtered as f64);
-                peak = peak.max(filtered.abs());
+            for &sample in &raw {
                 if ring.samples.len() >= limit {
                     ring.samples.pop_front();
                 }
-                // Evidence matches what the meter measures: high-passed, and
-                // AI-denoised when the administrator enabled it.
-                ring.samples.push_back(filtered);
+                ring.samples.push_back(sample);
+            }
+            for &measured in processed.iter() {
+                sum_sq += (measured as f64) * (measured as f64);
+                peak = peak.max(measured.abs());
             }
         }
         if ignore_meter {
@@ -541,6 +546,7 @@ impl AudioShared {
             instant_dbfs
         };
         let elapsed = window.started.elapsed().as_secs_f64();
+        let window_complete = elapsed >= WINDOW_SECONDS;
         drop(window);
         let system_peak = f32::from_bits(self.system_peak.load(Ordering::Relaxed));
         let ignoring_system = !self.aec_enabled() && system_peak > SYSTEM_PLAYBACK_THRESHOLD;
@@ -556,7 +562,16 @@ impl AudioShared {
         };
         MeterSnapshot {
             current_db: audible.then(|| (instant_dbfs + offset).clamp(0.0, 160.0)),
-            average_db: audible.then(|| (average_dbfs + offset).clamp(0.0, 160.0)),
+            // The alert average is a full 30 s Leq. Until the first window has
+            // settled it is reported as 0 dB, so a loud startup cannot trip an
+            // alert before there is a complete measurement.
+            average_db: audible.then(|| {
+                if window_complete {
+                    (average_dbfs + offset).clamp(0.0, 160.0)
+                } else {
+                    0.0
+                }
+            }),
             peak_db: audible.then(|| (peak_dbfs + offset).clamp(0.0, 160.0)),
             rolling_15s_db: audible
                 .then(|| ((rolling_15s_dbfs.unwrap_or(instant_dbfs)) + offset).clamp(0.0, 160.0)),
@@ -689,6 +704,55 @@ fn encode_wav_i16(samples: &[f32], sample_rate: u32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_thirty_seconds_report_zero_average() {
+        let shared = AudioShared::new(90.0);
+        shared.ready.store(true, Ordering::SeqCst);
+        let block: Vec<f32> = (0..480)
+            .map(|i| 0.5 * (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / 48000.0).sin())
+            .collect();
+        for _ in 0..100 {
+            shared.push_block(&block, 1, 48000);
+        }
+        let snapshot = shared.snapshot();
+        assert_eq!(snapshot.average_db, Some(0.0));
+        assert!(snapshot.current_db.unwrap() > 50.0);
+        {
+            let mut window = shared.window.lock().unwrap();
+            window.started = Instant::now() - std::time::Duration::from_secs(30);
+        }
+        assert!(shared.snapshot().average_db.unwrap() > 50.0);
+    }
+
+    struct SilenceEngine;
+    impl DenoiseEngine for SilenceEngine {
+        fn process(&mut self, input: &[f32], output: &mut Vec<f32>) {
+            output.extend(std::iter::repeat(0.0).take(input.len()));
+        }
+        fn set_config(&mut self, _: u8, _: bool) {}
+        fn reset(&mut self) {}
+    }
+
+    #[test]
+    fn denoise_does_not_change_evidence_audio() {
+        let shared = AudioShared::new(90.0);
+        shared.ready.store(true, Ordering::SeqCst);
+        shared.set_engine(Box::new(SilenceEngine));
+        shared.set_denoise(DENOISE_STANDARD, false);
+        let block: Vec<f32> = (0..480)
+            .map(|i| 0.2 * (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / 48000.0).sin())
+            .collect();
+        for _ in 0..20 {
+            shared.push_block(&block, 1, 48000);
+        }
+        assert_eq!(shared.snapshot().current_db, Some(0.0));
+        let ring = shared.ring.lock().unwrap();
+        let rms = (ring.samples.iter().map(|v| v * v).sum::<f32>()
+            / ring.samples.len().max(1) as f32)
+            .sqrt();
+        assert!(rms > 0.1, "evidence was rewritten by denoise: rms {rms}");
+    }
 
     #[test]
     fn simultaneous_denoise_and_voice_changes_are_applied() {

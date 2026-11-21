@@ -4,7 +4,7 @@ use axum::{
     body::Body,
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        DefaultBodyLimit, FromRequestParts, Path, Query, State,
+        DefaultBodyLimit, FromRequestParts, Multipart, Path, Query, State,
     },
     http::{header, request::Parts, HeaderMap, HeaderValue, StatusCode},
     response::Response,
@@ -91,6 +91,24 @@ impl Admin {
         } else {
             Err(AppError::forbidden("无权访问该设备"))
         }
+    }
+}
+
+/// Authenticates and enforces the super-admin role before a body extractor
+/// such as `Multipart` runs. This keeps unauthorized uploads from receiving a
+/// confusing 400 (missing boundary) instead of 403.
+pub struct SuperAdmin;
+
+impl FromRequestParts<AppState> for SuperAdmin {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let admin = Admin::from_request_parts(parts, state).await?;
+        admin.require_super()?;
+        Ok(SuperAdmin)
     }
 }
 
@@ -185,6 +203,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/war-mode/leaderboard", get(war_leaderboard))
         .route("/update/check", get(check_update))
         .route("/update/apply", post(apply_update))
+        .route(
+            "/update/upload",
+            post(upload_update).layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
+        )
         .route("/update/status", get(update_status))
         .route("/settings", get(get_settings).put(update_settings))
         .route("/settings/fixed-password", put(update_fixed_password))
@@ -2660,6 +2682,74 @@ async fn check_update(admin: Admin) -> Result<Json<crate::update::UpdateCheck>, 
         .await
         .map_err(|e| AppError::new(StatusCode::BAD_GATEWAY, e))?;
     Ok(Json(result))
+}
+
+async fn upload_update(
+    _admin: SuperAdmin,
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> Result<Json<serde_json::Value>, AppError> {
+    if state
+        .update
+        .running
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return Ok(Json(json!({
+            "ok": true,
+            "started": true,
+            "message": "更新正在进行",
+        })));
+    }
+    let mut package = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|error| AppError::bad_request(format!("读取完整包失败：{error}")))?
+    {
+        if field.name() == Some("package") {
+            let bytes = field
+                .bytes()
+                .await
+                .map_err(|error| AppError::bad_request(format!("读取完整包失败：{error}")))?;
+            if bytes.len() > 64 * 1024 * 1024 {
+                return Err(AppError::bad_request("完整包超过 64 MB"));
+            }
+            package = Some(bytes.to_vec());
+            break;
+        }
+    }
+    let package = package.ok_or_else(|| AppError::bad_request("请选择完整包"))?;
+    if state
+        .update
+        .running
+        .swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
+        return Ok(Json(json!({
+            "ok": true,
+            "started": true,
+            "message": "更新正在进行",
+        })));
+    }
+    state
+        .update
+        .set("applying", "正在校验完整包…")
+        .await;
+    let update_state = state.update.clone();
+    let web_dist = state.config.web_dist.clone();
+    tokio::spawn(async move {
+        if let Err(error) =
+            crate::update::apply_uploaded_package(package, &web_dist, &update_state).await
+        {
+            update_state
+                .finish("failed", error, "完整包", false)
+                .await;
+        }
+    });
+    Ok(Json(json!({
+        "ok": true,
+        "started": true,
+        "message": "完整包已接收，正在应用",
+    })))
 }
 
 async fn update_status(

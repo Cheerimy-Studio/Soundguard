@@ -61,6 +61,7 @@ pub struct SoundGuardApp {
     pub screenshot: Option<String>,
     pub frames: u32,
     pub last_alarm: Option<Instant>,
+    pub last_reports_sent: u64,
 }
 impl SoundGuardApp {
     pub fn new(_: &eframe::CreationContext<'_>) -> Self {
@@ -131,6 +132,7 @@ impl SoundGuardApp {
             screenshot,
             frames: 0,
             last_alarm: None,
+            last_reports_sent: 0,
         };
         if preview {
             app.phase = Phase::Running;
@@ -152,6 +154,14 @@ impl SoundGuardApp {
                         now - 30.0 + i as f64 * 0.25,
                         47.0 + (i as f64 * 0.2).sin() * 5.0,
                     ]
+                })
+                .collect();
+            app.status.reports_sent = 126;
+            app.status.report_history = (0..3)
+                .map(|index| crate::net::ReportHistoryEntry {
+                    at: chrono::Utc::now() - chrono::Duration::minutes(index + 1),
+                    avg_db: 48.2 - index as f64 * 0.7,
+                    peak_db: 56.3 - index as f64 * 1.1,
                 })
                 .collect();
         }
@@ -235,6 +245,14 @@ impl SoundGuardApp {
                 }
             }
             self.status = self.net.poll();
+            if self.status.reports_sent > self.last_reports_sent {
+                self.last_reports_sent = self.status.reports_sent;
+                if self.config.report_sound {
+                    std::thread::spawn(|| {
+                        let _ = crate::playback::play_report_sound(0.6);
+                    });
+                }
+            }
             if self.status.call_state == "idle" {
                 self.muted = false;
             }
@@ -245,6 +263,7 @@ impl SoundGuardApp {
                 && !s.suspended
                 && self.status.call_state == "idle"
                 && !self.status.policy.war()
+                && s.progress >= 1.0
                 && s.average_db
                     .is_some_and(|v| v >= self.status.policy.threshold_db);
             if over
@@ -444,6 +463,7 @@ impl SoundGuardApp {
             self.net.send(Command::Hangup);
             self.net.start(self.config.clone(), self.audio.clone());
             self.status = NetState::default();
+            self.last_reports_sent = 0;
             self.waveform.clear();
         }
         self.net.send(Command::AutoAnswer(self.config.auto_answer));

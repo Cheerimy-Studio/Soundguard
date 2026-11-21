@@ -100,6 +100,13 @@ pub struct WarRankEntry {
 }
 
 #[derive(Debug, Clone)]
+pub struct ReportHistoryEntry {
+    pub at: DateTime<Utc>,
+    pub avg_db: f64,
+    pub peak_db: f64,
+}
+
+#[derive(Debug, Clone)]
 pub struct NetState {
     pub connected: bool,
     pub signaling: bool,
@@ -108,6 +115,7 @@ pub struct NetState {
     pub last_heartbeat: Option<DateTime<Utc>>,
     pub pending_reports: usize,
     pub reports_sent: u64,
+    pub report_history: Vec<ReportHistoryEntry>,
     pub call_state: String,
     pub call_mode: String,
     pub call_started: Option<Instant>,
@@ -128,6 +136,7 @@ impl Default for NetState {
             last_heartbeat: None,
             pending_reports: 0,
             reports_sent: 0,
+            report_history: Vec::new(),
             call_state: "idle".into(),
             call_mode: String::new(),
             call_started: None,
@@ -371,7 +380,7 @@ async fn run(
            if let Some(s)=&call{if s.peer.connection_state()==webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Connected{state.lock().unwrap().call_state="active".into();}}
            if let Some(w)=audio.shared.take_window(){let offset=audio.shared.offset() as f64;let avg=(w.avg_dbfs+offset).clamp(0.0,160.0);use base64::Engine;let audio_base64=if !policy.war()&&avg>=policy.threshold_db&&policy.auto_record_evidence{audio.shared.take_evidence_wav(30).map(|v|base64::engine::general_purpose::STANDARD.encode(v))}else{None};if reports.len()>=12{reports.pop_front();}reports.push_back(Report{device_id:c.device_id.clone(),avg_db:avg,peak_db:(w.peak_dbfs+offset).clamp(0.0,160.0),min_db:(w.min_dbfs+offset).clamp(0.0,160.0),duration_secs:w.duration_secs.round().clamp(1.0,300.0) as u32,sample_count:w.frames.min(u32::MAX as u64) as u32,recorded_at:policy.server_time.unwrap_or_else(Utc::now).to_rfc3339(),audio_base64});}
            if state.lock().unwrap().connected{
-             if let Some(report)=reports.front(){match request::<Value>(&http,&c,"/api/device/telemetry",Some(serde_json::to_value(report).unwrap())).await{Ok(v)if v["accepted"]==true=>{reports.pop_front();state.lock().unwrap().reports_sent+=1;},Ok(_)=>state.lock().unwrap().last_error="服务器未确认遥测入库".into(),Err(e)=>state.lock().unwrap().last_error=e}}
+             if let Some(report)=reports.front(){let avg=report.avg_db;let peak=report.peak_db;match request::<Value>(&http,&c,"/api/device/telemetry",Some(serde_json::to_value(report).unwrap())).await{Ok(v)if v["accepted"]==true=>{reports.pop_front();let mut s=state.lock().unwrap();s.reports_sent+=1;s.report_history.insert(0,ReportHistoryEntry{at:Utc::now(),avg_db:avg,peak_db:peak});s.report_history.truncate(20);},Ok(_)=>state.lock().unwrap().last_error="服务器未确认遥测入库".into(),Err(e)=>state.lock().unwrap().last_error=e}}
              let s=audio.shared.snapshot();let _=request::<Value>(&http,&c,"/api/device/live",Some(json!({"deviceId":c.device_id,"currentDb":s.current_db.unwrap_or(0.0),"averageDb":s.average_db,"peakDb":s.peak_db,"rolling15sDb":s.rolling_15s_db,"capturing":s.capturing,"suspended":s.suspended,"systemPlaying":s.system_playing,"aecEnabled":s.aec_enabled,"recordedAt":Utc::now()}))).await;
            }
            state.lock().unwrap().pending_reports=reports.len();
